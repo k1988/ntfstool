@@ -118,15 +118,16 @@ namespace utils
 			return ret;
 		}
 
-		std::string to_hex(PVOID buffer, unsigned long size)
+		std::string to_hex(PVOID buffer, unsigned long size, bool upperCase)
 		{
 			std::ostringstream ret;
 			PBYTE buf = reinterpret_cast<PBYTE>(buffer);
+			const auto menu = upperCase ? "0123456789ABCDEF" : "0123456789abcdef";
 			if (buffer != nullptr)
 			{
 				for (unsigned int i = 0; i < size; i++)
 				{
-					ret << "0123456789ABCDEF"[buf[i] >> 4] << "0123456789ABCDEF"[buf[i] & 0x0F];
+                    ret << menu[buf[i] >> 4] << menu[buf[i] & 0x0F];
 				}
 			}
 			return ret.str();
@@ -476,6 +477,7 @@ namespace utils
 					return TRUE;
 				}
 			}
+
 			return FALSE;
 		}
 

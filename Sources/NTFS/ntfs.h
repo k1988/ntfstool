@@ -200,8 +200,10 @@ typedef struct {
 	} machines;
 } VSS_STORE_HEADER, * PVSS_STORE_HEADER;
 
+// 一般出现在LogFile的最开头
+// 重启区域的头
 typedef struct {
-	DWORD	magic;
+	DWORD	magic;// RSTR
 	WORD	update_sequence_array_offset;
 	WORD	update_sequence_array_count;
 	DWORD64	chkdsk_lsn;
@@ -212,15 +214,16 @@ typedef struct {
 	WORD	major_version;
 } RESTART_PAGE_HEADER, * PRESTART_PAGE_HEADER;
 
+// 重启页区域内容
 typedef struct {
 	DWORD64 current_lsn;
-	WORD	log_clients;
+	WORD	log_clients; // 重启页中包含的客户端(LOG_CLIENT_RECORD)个数，至少有一个NTFS
 	WORD	client_free_list;
 	WORD	client_in_use_list;
 	WORD	flags;
 	DWORD	seq_number_bits;
 	WORD	restart_area_length;
-	WORD	client_array_offset;
+	WORD	client_array_offset;// 客户端(LOG_CLIENT_RECORD)数组的起始位置
 	DWORD64	file_size;
 	DWORD	last_lsn_data_length;
 	WORD	log_record_header_length;
@@ -229,8 +232,9 @@ typedef struct {
 	DWORD	reserved;
 } RESTART_AREA, * PRESTART_AREA;
 
+// 无限日志记录区域 40BYTES
 typedef struct {
-	CHAR	magic[4];
+	CHAR	magic[4]; // RCRD
 	WORD	update_sequence_array_offset;
 	WORD	update_sequence_array_count;
 	union {

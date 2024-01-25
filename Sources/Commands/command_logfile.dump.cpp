@@ -19,6 +19,8 @@
 #include <Utils/csv_file.h>
 #include <Utils/json_file.h>
 
+#include "ntfsdump_logfile_ext.h"
+
 void fixup_sequence(PRECORD_PAGE_HEADER prh)
 {
 	if (prh->update_sequence_array_count > 1)
@@ -95,6 +97,171 @@ void _add_record(std::shared_ptr<FormatteddFile> ffile, PRECORD_LOG rl)
 	ffile->new_line();
 }
 
+/* 打印logfile指定的日志文件数据
+ * @param format 文档格式,json 或 csv
+ * @param output 输出文件路径
+ * @param logfile 日志文件的内存数据
+ * 
+*/
+void dump_logdata(const std::string& format, std::string output, const std::shared_ptr<Buffer<PBYTE>>& logFileData)
+{
+    PRESTART_PAGE_HEADER newest_restart_header = find_newest_restart_page(logFileData->data());
+    PRESTART_AREA newest_restart_area = POINTER_ADD(PRESTART_AREA, newest_restart_header, newest_restart_header->restart_area_offset);
+
+    std::cout << "[-] Newest Restart Page LSN : " << std::to_string(newest_restart_area->current_lsn) << std::endl;
+
+    if (newest_restart_area->flags & MFT_LOGFILE_RESTART_AREA_FLAG_VOLUME_CLEANLY_UNMOUNTED)
+    {
+        std::cout << "[!] Volume marked as not cleanly unmounted" << std::endl;
+    }
+    else
+    {
+        std::cout << "[-] Volume marked as cleanly unmounted" << std::endl;
+    }
+
+    //////////
+
+    DWORD client_i = 1;
+    for (auto& client : get_log_clients(newest_restart_area))
+    {
+        std::cout << "[-] Client found : [" << std::to_string(client_i++) << "] " << client << std::endl;
+    }
+
+    //////////
+
+    std::cout << "[+] Parsing $LogFile Record Pages" << std::endl;
+
+    std::vector<PRECORD_PAGE_HEADER> record_page_offsets;
+
+    // modify by k1988 4=>2
+	// 按页面大小将每个开头为RCRD的页插入队列
+    for (DWORD offset = /*4*/ 2 * newest_restart_header->log_page_size; offset < logFileData->size(); offset += newest_restart_header->log_page_size)
+    {
+        PRECORD_PAGE_HEADER prh = POINTER_ADD(PRECORD_PAGE_HEADER, logFileData->data(), offset);
+        if (memcmp(prh->magic, "RCRD", 4) != 0) {
+            continue;
+        }
+        //record_page_offsets.push_back(prh);
+		/*std::string_view pageData((char*)prh, newest_restart_header->log_page_size);		
+		_DecodeRCRD(pageData, offset, 0, 1);*/
+
+		// 转换为hex字节串
+		auto pageData = utils::convert::to_hex((char*)prh, newest_restart_header->log_page_size, false);
+		pageData.insert(0, "  ");
+		pageData = _DoFixup(pageData, offset);
+
+
+		_DecodeRCRD(pageData, offset, 0, 1);
+    }
+
+    std::cout << "[-] $LogFile Record Page Count : " << std::to_string(record_page_offsets.size()) << std::endl;
+
+	return ;
+
+    /////////
+
+    std::shared_ptr<FormatteddFile> ffile;
+
+    if (format == "csv")
+    {
+        ffile = std::make_shared<CSVFile>(output);
+    }
+    else
+    {
+        ffile = std::make_shared<JSONFile>(output);
+    }
+
+    ffile->set_columns(
+        {
+            "LSN",
+            "ClientPreviousLSN",
+            "UndoNextLSN",
+            "ClientID",
+            "RecordType",
+            "TransactionID",
+            "RedoOperation",
+            "UndoOperation",
+            "MFTClusterIndex",
+            "TargetVCN",
+            "TargetLCN"
+        }
+    );
+
+    std::cout << "[-] Parsing $LogFile Records" << std::endl;
+
+    Buffer<PBYTE> leftover_buffer(8 * 4096);
+    DWORD leftover_size = 0;
+    DWORD leftover_missing_size = 0;
+    DWORD processed = 0;
+
+	// 解析每个页
+    for (PRECORD_PAGE_HEADER prh : record_page_offsets)
+    {
+        fixup_sequence(prh);
+
+        DWORD offset = 64;// 
+        DWORD index = 1;
+
+        if (leftover_size > 0)
+        {
+            memcpy(leftover_buffer.data() + leftover_size, POINTER_ADD(PBYTE, prh, offset), min(leftover_missing_size, 4096 - offset));
+            leftover_missing_size -= min(leftover_missing_size, 4096 - offset);
+
+            if (leftover_missing_size == 0)
+            {
+                _add_record(ffile, POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0));
+
+                processed++;
+                std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
+
+                offset += leftover_missing_size;
+                leftover_size = 0;
+            }
+            else
+            {
+                continue;
+            }
+        }
+
+        index = 1;
+        DWORD stop = min(prh->header.packed.next_record_offset + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE, 4096 - MFT_LOGFILE_LOG_RECORD_HEADER_SIZE);
+
+		// 解析头后面的日志记录
+        int error = 0;
+        while (offset < stop)
+        {
+            PRECORD_LOG prl = POINTER_ADD(PRECORD_LOG, prh, offset);
+
+            if (error > 1)
+            {
+                break;
+            }
+
+            if (prl->lsn == 0 || prl->record_type == 0 || prl->record_type > 37)
+            {
+                error++;
+                offset = prh->header.packed.next_record_offset;
+                continue;
+            }
+
+            offset += MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->client_data_length;
+
+            if (prl->flags & LOG_RECORD_MULTI_PAGE)
+            {
+                memcpy(leftover_buffer.data(), prl, 4096 - prh->header.packed.next_record_offset);
+                leftover_size = 4096 - prh->header.packed.next_record_offset;
+                leftover_missing_size = prl->client_data_length - (leftover_size - MFT_LOGFILE_LOG_RECORD_HEADER_SIZE);
+            }
+            else
+            {
+                _add_record(ffile, prl);
+
+                processed++;
+                std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
+            }
+        }
+    }
+}
 
 int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol, const std::string& format, std::string output)
 {
@@ -143,146 +310,54 @@ int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vo
 	{
 		std::shared_ptr<Buffer<PBYTE>> logfile = record->data();
 
-		PRESTART_PAGE_HEADER newest_restart_header = find_newest_restart_page(logfile->data());
-		PRESTART_AREA newest_restart_area = POINTER_ADD(PRESTART_AREA, newest_restart_header, newest_restart_header->restart_area_offset);
+		dump_logdata(format, output, logfile);
+	}
+	else
+	{
+		std::cout << "[!] Invalid or missing format" << std::endl;
+		return 2;
+	}
 
-		std::cout << "[-] Newest Restart Page LSN : " << std::to_string(newest_restart_area->current_lsn) << std::endl;
+	std::cout << std::endl << "[+] Closing volume" << std::endl;
 
-		if (newest_restart_area->flags & MFT_LOGFILE_RESTART_AREA_FLAG_VOLUME_CLEANLY_UNMOUNTED)
-		{
-			std::cout << "[!] Volume marked as not cleanly unmounted" << std::endl;
-		}
-		else
-		{
-			std::cout << "[-] Volume marked as cleanly unmounted" << std::endl;
-		}
+	return 0;
+}
 
-		//////////
+// 从dump出来的$LogFile文件中打印所有的日志记录
+int print_logfile_records_file(std::string input, std::shared_ptr<Buffer<PBYTE>> input_data, const std::string& format, std::string output)
+{
+	utils::ui::title("LogFile from " + input);
 
-		DWORD client_i = 1;
-		for (auto& client : get_log_clients(newest_restart_area))
-		{
-			std::cout << "[-] Client found : [" << std::to_string(client_i++) << "] " << client << std::endl;
-		}
+	std::cout << "[+] Opening " << input << std::endl;
 
-		//////////
+	std::ifstream record(input, std::ios_base::binary | std::ios_base::in);
+	if (!record.is_open())
+	{
+		std::cerr << "无法打开文件:" << input << std::endl;
+		return -1;
+	}
+	// 定位到文件末尾
+	record.seekg(0, std::ios::end);
 
-		std::cout << "[+] Parsing $LogFile Record Pages" << std::endl;
+	// 获取文件大小
+	std::streampos fileSize = record.tellg();
 
-		std::vector<PRECORD_PAGE_HEADER> record_page_offsets;
+	ULONG64 total_size = fileSize;
 
-		for (DWORD offset = 4 * newest_restart_header->log_page_size; offset < logfile->size(); offset += newest_restart_header->log_page_size)
-		{
-			PRECORD_PAGE_HEADER prh = POINTER_ADD(PRECORD_PAGE_HEADER, logfile->data(), offset);
-			if (memcmp(prh->magic, "RCRD", 4) != 0) {
-				continue;
-			}
-			record_page_offsets.push_back(prh);
-		}
+	std::cout << "[+] $LogFile size : " << utils::format::size(total_size) << std::endl;
 
-		std::cout << "[-] $LogFile Record Page Count : " << std::to_string(record_page_offsets.size()) << std::endl;
+	std::cout << "[+] Creating " << output << std::endl;
 
-		/////////
-
-		std::shared_ptr<FormatteddFile> ffile;
-
-		if (format == "csv")
-		{
-			ffile = std::make_shared<CSVFile>(output);
-		}
-		else
-		{
-			ffile = std::make_shared<JSONFile>(output);
-		}
-
-		ffile->set_columns(
-			{
-			"LSN",
-			"ClientPreviousLSN",
-			"UndoNextLSN",
-			"ClientID",
-			"RecordType",
-			"TransactionID",
-			"RedoOperation",
-			"UndoOperation",
-			"MFTClusterIndex",
-			"TargetVCN",
-			"TargetLCN"
-			}
-		);
-
-		std::cout << "[-] Parsing $LogFile Records" << std::endl;
-
-		Buffer<PBYTE> leftover_buffer(8 * 4096);
-		DWORD leftover_size = 0;
-		DWORD leftover_missing_size = 0;
-		DWORD processed = 0;
-
-		for (PRECORD_PAGE_HEADER prh : record_page_offsets)
-		{
-			fixup_sequence(prh);
-
-			DWORD offset = 64;
-			DWORD index = 1;
-
-			if (leftover_size > 0)
-			{
-				memcpy(leftover_buffer.data() + leftover_size, POINTER_ADD(PBYTE, prh, offset), min(leftover_missing_size, 4096 - offset));
-				leftover_missing_size -= min(leftover_missing_size, 4096 - offset);
-
-				if (leftover_missing_size == 0)
-				{
-					_add_record(ffile, POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0));
-
-					processed++;
-					std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
-
-					offset += leftover_missing_size;
-					leftover_size = 0;
-				}
-				else
-				{
-					continue;
-				}
-			}
-
-			index = 1;
-			DWORD stop = min(prh->header.packed.next_record_offset + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE, 4096 - MFT_LOGFILE_LOG_RECORD_HEADER_SIZE);
-
-			int error = 0;
-			while (offset < stop)
-			{
-				PRECORD_LOG prl = POINTER_ADD(PRECORD_LOG, prh, offset);
-
-				if (error > 1)
-				{
-					break;
-				}
-
-				if (prl->lsn == 0 || prl->record_type == 0 || prl->record_type > 37)
-				{
-					error++;
-					offset = prh->header.packed.next_record_offset;
-					continue;
-				}
-
-				offset += MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->client_data_length;
-
-				if (prl->flags & LOG_RECORD_MULTI_PAGE)
-				{
-					memcpy(leftover_buffer.data(), prl, 4096 - prh->header.packed.next_record_offset);
-					leftover_size = 4096 - prh->header.packed.next_record_offset;
-					leftover_missing_size = prl->client_data_length - (leftover_size - MFT_LOGFILE_LOG_RECORD_HEADER_SIZE);
-				}
-				else
-				{
-					_add_record(ffile, prl);
-
-					processed++;
-					std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
-				}
-			}
-		}
+	if (format == "raw")
+	{
+		std::cerr << "暂时不支持raw模式" << std::endl;
+	}
+	else if (format == "json" || format == "csv")
+	{
+		std::shared_ptr<Buffer<PBYTE>> logfile(new Buffer<PBYTE>(total_size));
+		record.seekg(0);
+		record.read((char*)logfile->address(), total_size);
+		dump_logdata(format, output, logfile);
 	}
 	else
 	{
@@ -303,31 +378,51 @@ namespace commands
 		{
 			std::ios_base::fmtflags flag_backup(std::cout.flags());
 
-			std::shared_ptr<Disk> disk = get_disk(opts);
-			if (disk != nullptr)
+			if (opts->from != "")
 			{
-				std::shared_ptr<Volume> volume = disk->volumes(opts->volume);
-				if (volume != nullptr)
+				std::shared_ptr<Buffer<PBYTE>> filebuf = Buffer<PBYTE>::from_file(utils::strings::from_string(opts->from));
+				if (filebuf != nullptr)
 				{
 					if (opts->output != "")
 					{
-						if (opts->format == "") opts->format = "raw";
+						if (opts->format == "") opts->format = "csv";
+					}
 
-						print_logfile_records(disk, volume, opts->format, opts->output);
-					}
-					else
-					{
-						invalid_option(opts, "output", opts->output);
-					}
+					print_logfile_records_file(opts->from, filebuf, opts->format, opts->output);
 				}
 				else
 				{
-					invalid_option(opts, "volume", opts->volume);
+					invalid_option(opts, "from", opts->from);
 				}
 			}
 			else
 			{
-				invalid_option(opts, "disk", opts->disk);
+				std::shared_ptr<Disk> disk = get_disk(opts);
+				if (disk != nullptr)
+				{
+					std::shared_ptr<Volume> volume = disk->volumes(opts->volume);
+					if (volume != nullptr)
+					{
+						if (opts->output != "")
+						{
+							if (opts->format == "") opts->format = "raw";
+
+							print_logfile_records(disk, volume, opts->format, opts->output);
+						}
+						else
+						{
+							invalid_option(opts, "output", opts->output);
+						}
+					}
+					else
+					{
+						invalid_option(opts, "volume", opts->volume);
+					}
+				}
+				else
+				{
+					invalid_option(opts, "disk", opts->disk);
+				}
 			}
 
 			std::cout.flags(flag_backup);

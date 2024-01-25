@@ -36,7 +36,7 @@ namespace utils
 	{
 		std::shared_ptr<Buffer<PBYTE>> from_hex(std::string s);
 
-		std::string to_hex(PVOID buffer, unsigned long size);
+		std::string to_hex(PVOID buffer, unsigned long size,bool upperCase = true);
 	}
 
 	namespace strings
@@ -62,7 +62,7 @@ namespace utils
 		std::string to_utf8(std::wstring s, DWORD encoding = CP_UTF8);
 
 		std::string reverse(std::string input);
-
+		 
 		void replace(std::string& str, const std::string& from, const std::string& to);
 
 		std::vector<std::string> split(const std::string& text, TCHAR delimiter);

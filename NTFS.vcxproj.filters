@@ -216,6 +216,9 @@
     <ClInclude Include="Sources\Bitlocker\unprotected.h">
       <Filter>Header Files\Bitlocker</Filter>
     </ClInclude>
+    <ClInclude Include="Sources\Commands\ntfsdump_logfile_ext.h">
+      <Filter>Header Files\Commands</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sources\main.cpp">
@@ -418,6 +421,9 @@
     </ClCompile>
     <ClCompile Include="Sources\Bitlocker\unprotected.cpp">
       <Filter>Source Files\Bitlocker</Filter>
+    </ClCompile>
+    <ClCompile Include="Sources\Commands\ntfsdump_logfile_ext.cpp">
+      <Filter>Header Files\Commands</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

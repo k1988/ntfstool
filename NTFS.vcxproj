@@ -27,6 +27,7 @@
     <ClInclude Include="Sources\Bitlocker\recovery.h" />
     <ClInclude Include="Sources\Bitlocker\unprotected.h" />
     <ClInclude Include="Sources\Commands\commands.h" />
+    <ClInclude Include="Sources\Commands\ntfsdump_logfile_ext.h" />
     <ClInclude Include="Sources\Compression\lznt1.h" />
     <ClInclude Include="Sources\Compression\ntdll_defs.h" />
     <ClInclude Include="Sources\Compression\lzx.h" />
@@ -106,6 +107,7 @@
     <ClCompile Include="Sources\Commands\command_help.cpp" />
     <ClCompile Include="Sources\Commands\command_info.cpp" />
     <ClCompile Include="Sources\Commands\command_mbr.cpp" />
+    <ClCompile Include="Sources\Commands\ntfsdump_logfile_ext.cpp" />
     <ClCompile Include="Sources\Compression\lznt1.cpp" />
     <ClCompile Include="Sources\Compression\lzx.cpp" />
     <ClCompile Include="Sources\Compression\xpress.cpp" />
