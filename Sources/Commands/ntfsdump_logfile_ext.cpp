@@ -103,7 +103,7 @@ namespace std
 
 #define _DumpOutputPrintf(...) printf(__VA_ARGS__)
 
-inline void _DumpOutput(std::string msg)
+static inline void _DumpOutput(std::string msg)
 {
     std::cout << msg << std::endl;
     //_DumpOutputPrintf(msg.c_str());
@@ -111,7 +111,7 @@ inline void _DumpOutput(std::string msg)
 
 // 打印Hex表格,格式:
 //0000	31 7c 10 00 00 00 00 00  a3 7b 10 00 00 00 00 00   1 | .......{......
-inline void _DumpOutputHex(std::string msg)
+static inline void _DumpOutputHex(std::string msg)
 {
     auto i = 0;
     auto line = (msg.size() + 31) / 32;
@@ -1056,8 +1056,12 @@ std::string _DecodeRCRD(const std::string_view& RCRDRecord, DWORD RCRDOffset, in
                 return {};;
             }
         }
+
         // 	_DumpOutput("Transaction: "   "\r\n");
         // 	_DumpOutput(_HexEncode(Dec(ClientData) +  )"\r\n");
+
+        _DumpOutputPrintf("--- decoding LSN %d of page 0x%x, at offset 0x%x", DataPart,
+            RCRDOffset, RecordOffset - RCRDOffset);
         _DecodeLSNRecord(ClientData, max_last_lsn, RecordOffset);
         NextOffset += 96 + SizeOfClientData;
         DataPart += 1;

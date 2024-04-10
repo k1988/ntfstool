@@ -44,3 +44,4 @@ Docs\sources_private
 /Docs/sources_private
 /vcpkg_installed
 /test.bat
+/*.user

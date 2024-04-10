@@ -1,10 +1,21 @@
+#include <Windows.h>
+
+#include "options.h"
+#include "Commands/commands.h"
+#include <Utils/crash_handler.h>
+
+#include <iostream>
+#include <filesystem>
+
 #include "Drive/disk.h"
 #include "Utils/utils.h"
 #include "options.h"
-#include "Commands/commands.h"
+//#include "Commands/commands.h"
+#include "libntfsinfo.h"
 #include "NTFS/ntfs.h"
 #include "NTFS/ntfs_explorer.h"
 #include "Utils/constant_names.h"
+#include "Utils/path_finder.h"
 #include "Utils/table.h"
 
 #include <nlohmann/json.hpp>
@@ -19,8 +30,48 @@
 #include <Utils/csv_file.h>
 #include <Utils/json_file.h>
 
-#include "ntfsdump_logfile_ext.h"
+std::vector<LogFileFileRecord> g_records;
+std::vector<UsnFileRecord> g_usn_records;
 
+std::wstring LogFileFileRecord::filename() const
+{
+    std::wstring filename(filename_pointer, filename_length);
+    std::replace_if(filename.begin(), filename.end(), [](auto v) {
+        return v == ':';
+        }, L'|');
+    return filename;
+}
+
+int is_ntfs(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol)
+{
+    if ((vol->filesystem() != "NTFS") && (vol->filesystem() != "Bitlocker"))
+    {
+        std::cerr << "[!] NTFS volume required" << std::endl;
+        return 0;
+    }
+    return 1;
+}
+
+/// @brief windows 窄字符串转换为unicode字符串
+/// @param local_str 输入的待转换的字符串
+/// @param codepage utf8:65001 OEMCP:1 GB2313:936
+/// @return 返回转换的字符串
+inline std::wstring local_to_unicode(const std::string& local_str, int codepage = 0)
+{
+    std::wstring result;
+    int minSize = ::MultiByteToWideChar(/*codepage*/ codepage, /*flags*/ 0, local_str.c_str(), local_str.length(), NULL, 0);
+    if (minSize > 0)
+    {
+        result.resize(minSize);
+        int ret = ::MultiByteToWideChar(/*codepage*/ codepage, /*flags*/ 0, local_str.c_str(), local_str.length(),
+            (wchar_t*)result.data(), minSize);
+        if ((ret > 0))
+        {
+            return result;
+        }
+    }
+    return {};
+}
 
 /**
  * 类型为DeleteIndexEntryAllocation和AddIndexEntryAllocation时,LogRecord附带的客户端数据的结构
@@ -48,7 +99,7 @@ public:
         return mft_parent >> 48;
     }
 
-    std::wstring filename() const 
+    std::wstring filename() const
     {
         auto filename = std::wstring((wchar_t*)(this) + filename_offset, filename_length);
         std::replace_if(filename.begin(), filename.end(), [](auto v) {
@@ -91,151 +142,106 @@ public:
     // 整个结构体大小不是8的整数的,后面需要补齐8字节
 };
 
-
+#ifdef _DEBUG
 #define _DumpOutputPrintf(...) printf("[CPP] " __VA_ARGS__)
 static inline void _DumpOutput(std::string msg)
 {
     std::cout << "[CPP] " << msg << std::endl;
     //_DumpOutputPrintf(msg.c_str());
 }
-int64_t My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo);
+#else
+#define _DumpOutputPrintf(...) void(0);
+#define _DumpOutput(...) void(0);
+#endif
 
-// 打印Hex表格,格式:
-//0000	31 7c 10 00 00 00 00 00  a3 7b 10 00 00 00 00 00   1 | .......{......
-static inline void _DumpOutputHex(std::string msg)
-{
-    auto i = 0;
-    auto line = (msg.size() + 15) / 16;
-    for (; i < line; i++)
-    {
-        // 字节索引表,2个hex为1个字节
-        std::cout << std::hex << std::setw(4) << std::setfill('0') << 16 * i << "\t";
+bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo);
 
-        // 右侧明文表
-        std::string plainText;
-
-        // 中间字节
-        for (auto j = i * 16; j < (i * 16) + 16; j += 1)
-        {
-            // 每8个多加一个空格
-            if ((j % 16) == 8)
-            {
-                std::cout << " ";
-            }
-
-            if (j >= msg.size())
-            {
-                // 最后一行超出部分直接使用空格
-                std::cout << "   ";
-            }
-            else
-            {
-                auto byte = (BYTE)msg[j];
-                std::cout << utils::format::hex((BYTE)byte) << " ";
-
-                // 对于可见字符插入明文表
-                if (std::isprint(byte))
-                {
-                    plainText.push_back(byte);
-                }
-                else
-                {
-                    plainText.push_back('.');
-                }
-            }
-        }
-
-        // 打印明文表
-        std::cout << "  " << plainText << std::endl;
-    }
-
-    std::cout << std::endl;
-    std::cout << std::endl;
-}
-
+/**
+ * 数据结构修复
+ */
 void fixup_sequence(PRECORD_PAGE_HEADER prh)
 {
-	if (prh->update_sequence_array_count > 1)
-	{
-		PWORD pfixup = POINTER_ADD(PWORD, prh, prh->update_sequence_array_offset);
-		DWORD offset = 0x200 - sizeof(WORD);
-		for (int i = 1; i < prh->update_sequence_array_count; i++)
-		{
-			if (*POINTER_ADD(PWORD, prh, offset) == pfixup[0])
-			{
-				*POINTER_ADD(PWORD, prh, offset) = pfixup[i];
-			}
-			offset += 0x200;
-			if (offset > 0x1000 - sizeof(WORD))
-			{
-				break;
-			}
-		}
-	}
+    if (prh->update_sequence_array_count > 1)
+    {
+        PWORD pfixup = POINTER_ADD(PWORD, prh, prh->update_sequence_array_offset);
+        DWORD offset = 0x200 - sizeof(WORD);
+        for (int i = 1; i < prh->update_sequence_array_count; i++)
+        {
+            if (*POINTER_ADD(PWORD, prh, offset) == pfixup[0])
+            {
+                *POINTER_ADD(PWORD, prh, offset) = pfixup[i];
+            }
+            offset += 0x200;
+            if (offset > 0x1000 - sizeof(WORD))
+            {
+                break;
+            }
+        }
+    }
 }
 
 PRESTART_PAGE_HEADER find_newest_restart_page(PBYTE logfile)
 {
-	PRESTART_PAGE_HEADER newestRestartPageHeader = nullptr;
+    PRESTART_PAGE_HEADER newestRestartPageHeader = nullptr;
 
-	PRESTART_PAGE_HEADER prstpage0 = POINTER_ADD(PRESTART_PAGE_HEADER, logfile, 0);
-	PRESTART_PAGE_HEADER prstpage1 = POINTER_ADD(PRESTART_PAGE_HEADER, logfile, 4096);
-	PRESTART_AREA prstarea0 = POINTER_ADD(PRESTART_AREA, prstpage0, prstpage0->restart_area_offset);
-	PRESTART_AREA prstarea1 = POINTER_ADD(PRESTART_AREA, prstpage1, prstpage1->restart_area_offset);
-	if (prstarea0->current_lsn > prstarea1->current_lsn)
-	{
-		newestRestartPageHeader = prstpage0;
-	}
-	else
-	{
-		newestRestartPageHeader = prstpage1;
-	}
+    PRESTART_PAGE_HEADER prstpage0 = POINTER_ADD(PRESTART_PAGE_HEADER, logfile, 0);
+    PRESTART_PAGE_HEADER prstpage1 = POINTER_ADD(PRESTART_PAGE_HEADER, logfile, 4096);
+    PRESTART_AREA prstarea0 = POINTER_ADD(PRESTART_AREA, prstpage0, prstpage0->restart_area_offset);
+    PRESTART_AREA prstarea1 = POINTER_ADD(PRESTART_AREA, prstpage1, prstpage1->restart_area_offset);
+    if (prstarea0->current_lsn > prstarea1->current_lsn)
+    {
+        newestRestartPageHeader = prstpage0;
+    }
+    else
+    {
+        newestRestartPageHeader = prstpage1;
+    }
 
-	return newestRestartPageHeader;
+    return newestRestartPageHeader;
 }
 
 std::vector<std::string> get_log_clients(PRESTART_AREA ra)
 {
-	std::vector<std::string> ret;
-	WORD log_clients_count = ra->log_clients;
-	if (log_clients_count != MFT_LOGFILE_NO_CLIENT)
-	{
-		PLOG_CLIENT_RECORD plcr = POINTER_ADD(PLOG_CLIENT_RECORD, ra, ra->client_array_offset);
-		for (int i = 0; i < log_clients_count; i++)
-		{
-			std::wstring client_name = std::wstring(plcr->client_name);
-			client_name.resize(plcr->client_name_length);
-			ret.push_back(utils::strings::to_utf8(client_name));
-			plcr = POINTER_ADD(PLOG_CLIENT_RECORD, plcr, plcr->next_client);
-		}
-	}
-	return ret;
+    std::vector<std::string> ret;
+    WORD log_clients_count = ra->log_clients;
+    if (log_clients_count != MFT_LOGFILE_NO_CLIENT)
+    {
+        PLOG_CLIENT_RECORD plcr = POINTER_ADD(PLOG_CLIENT_RECORD, ra, ra->client_array_offset);
+        for (int i = 0; i < log_clients_count; i++)
+        {
+            std::wstring client_name = std::wstring(plcr->client_name);
+            client_name.resize(plcr->client_name_length);
+            ret.push_back(utils::strings::to_utf8(client_name));
+            plcr = POINTER_ADD(PLOG_CLIENT_RECORD, plcr, plcr->next_client);
+        }
+    }
+    return ret;
 }
 
 void _add_record(std::shared_ptr<FormatteddFile> ffile, PRECORD_LOG rl)
 {
-	ffile->add_item(rl->lsn);
-	ffile->add_item(rl->client_previous_lsn);
-	ffile->add_item(rl->client_undo_next_lsn);
-	ffile->add_item(rl->client_id.client_index);
-	ffile->add_item(rl->record_type);
-	ffile->add_item(rl->transaction_id);
-	ffile->add_item(constants::disk::logfile::operation(rl->redo_operation));
-	ffile->add_item(constants::disk::logfile::operation(rl->undo_operation));
-	ffile->add_item(rl->mft_cluster_index);
-	ffile->add_item(rl->target_vcn);
-	ffile->add_item(rl->target_lcn);
+    ffile->add_item(rl->lsn);
+    ffile->add_item(rl->client_previous_lsn);
+    ffile->add_item(rl->client_undo_next_lsn);
+    ffile->add_item(rl->client_id.client_index);
+    ffile->add_item(rl->record_type);
+    ffile->add_item(rl->transaction_id);
+    ffile->add_item(constants::disk::logfile::operation(rl->redo_operation));
+    ffile->add_item(constants::disk::logfile::operation(rl->undo_operation));
+    ffile->add_item(rl->mft_cluster_index);
+    ffile->add_item(rl->target_vcn);
+    ffile->add_item(rl->target_lcn);
 
-	ffile->new_line();
+    ffile->new_line();
 }
 
 /* 打印logfile指定的日志文件数据
  * @param format 文档格式,json 或 csv
  * @param output 输出文件路径
  * @param logfile 日志文件的内存数据
- * 
+ *
 */
-void dump_logdata(const std::string& format, std::string output, const std::shared_ptr<Buffer<PBYTE>>& logFileData)
+void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
 {
     PRESTART_PAGE_HEADER newest_restart_header = find_newest_restart_page(logFileData->data());
     PRESTART_AREA newest_restart_area = POINTER_ADD(PRESTART_AREA, newest_restart_header, newest_restart_header->restart_area_offset);
@@ -266,7 +272,7 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
     std::vector<PRECORD_PAGE_HEADER> record_page_offsets;
 
     // modify by k1988 4=>2
-	// 按页面大小将每个开头为RCRD的页插入队列
+    // 按页面大小将每个开头为RCRD的页插入队列
     for (DWORD offset = /*4*/ 2 * newest_restart_header->log_page_size; offset < logFileData->size(); offset += newest_restart_header->log_page_size)
     {
         PRECORD_PAGE_HEADER prh = POINTER_ADD(PRECORD_PAGE_HEADER, logFileData->data(), offset);
@@ -279,34 +285,6 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
     std::cout << "[-] $LogFile Record Page Count : " << std::to_string(record_page_offsets.size()) << std::endl;
 
     /////////
-
-    std::shared_ptr<FormatteddFile> ffile;
-
-    if (format == "csv")
-    {
-        ffile = std::make_shared<CSVFile>(output);
-    }
-    else
-    {
-        ffile = std::make_shared<JSONFile>(output);
-    }
-
-    ffile->set_columns(
-        {
-            "LSN",
-            "ClientPreviousLSN",
-            "UndoNextLSN",
-            "ClientID",
-            "RecordType",
-            "TransactionID",
-            "RedoOperation",
-            "UndoOperation",
-            "MFTClusterIndex",
-            "TargetVCN",
-            "TargetLCN"
-        }
-    );
-
     std::cout << "[-] Parsing $LogFile Records" << std::endl;
 
     Buffer<PBYTE> leftover_buffer(8 * 4096);
@@ -314,19 +292,19 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
     DWORD leftover_missing_size = 0;
     DWORD processed = 0;
 
-	// 用于验证usn页的变量
-	int64_t last_lsn_tmp = 0;
-	int64_t last_end_lsn_tmp = 0;
+    // 用于验证usn页的变量
+    int64_t last_lsn_tmp = 0;
+    int64_t last_end_lsn_tmp = 0;
 
-	// 解析每个页
+    // 解析每个页
     for (PRECORD_PAGE_HEADER prh : record_page_offsets)
     {
         uint64_t page_offset = (PBYTE)prh - logFileData->data();
 
 #ifdef _DEBUG
         std::set<uint64_t> care_pos = {
-           // 0x0000d000,
-            0x00013000,// lsn 1148978 里有删除9CF7.tmp的记录
+            // 0x0000d000,
+             0x00013000,// lsn 1148978 里有删除9CF7.tmp的记录
         };
         if (care_pos.count(page_offset))
         {
@@ -334,15 +312,6 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
             i++;
         }
 #endif
-
-		// 转换为hex字节串
-		{
-			/*std::string_view pageData((char*)prh, newest_restart_header->log_page_size);*/
-			auto pageData = utils::convert::to_hex((char*)prh, newest_restart_header->log_page_size, false);
-			pageData.insert(0, "  ");
-			pageData = _DoFixup(pageData, page_offset);
-		//	_DecodeRCRD(pageData, page_offset, 0, 1);
-		}		
 
         fixup_sequence(prh);
 
@@ -356,7 +325,7 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
 
             if (leftover_missing_size == 0)
             {
-                _add_record(ffile, POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0));
+               // _add_record(ffile, POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0));
 
                 processed++;
                 std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
@@ -373,29 +342,29 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
         index = 1;
         DWORD stop = min(prh->header.packed.next_record_offset + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE, 4096 - MFT_LOGFILE_LOG_RECORD_HEADER_SIZE);
 
-		// 解析头后面的日志记录
+        // 解析头后面的日志记录
         int error = 0;
         while (offset < stop)
         {
-			if (error > 1)
+            if (error > 1)
             {
                 break;
             }
-  
+
             PRECORD_LOG prl = POINTER_ADD(PRECORD_LOG, prh, offset);
 
             // 检查当前位置是不是正确的RECORD_LOG
             int64_t CharsToMove = 0;
             bool FromRcrdSlack = false;
 
-			last_lsn_tmp = prh->copy.last_lsn;
-			last_lsn_tmp = prh->header.packed.last_end_lsn;
-			int64_t max_last_lsn = max(last_lsn_tmp, last_end_lsn_tmp);
+            last_lsn_tmp = prh->copy.last_lsn;
+            last_lsn_tmp = prh->header.packed.last_end_lsn;
+            int64_t max_last_lsn = max(last_lsn_tmp, last_end_lsn_tmp);
 
-			// 计算上下限
-			const auto lsnValidationLevel = 0.1f;
-			auto last_lsn_tmp_refup = std::round(max_last_lsn * (1 + lsnValidationLevel));
-			auto last_lsn_tmp_refdown = std::round(max_last_lsn * (1 - lsnValidationLevel));
+            // 计算上下限
+            const auto lsnValidationLevel = 0.1f;
+            auto last_lsn_tmp_refup = std::round(max_last_lsn * (1 + lsnValidationLevel));
+            auto last_lsn_tmp_refdown = std::round(max_last_lsn * (1 - lsnValidationLevel));
 
             if ((prl->lsn > max_last_lsn) || (prl->client_previous_lsn > max_last_lsn) || (prl->client_undo_next_lsn > max_last_lsn) || (prl->lsn < last_lsn_tmp_refdown) || (prl->client_previous_lsn < last_lsn_tmp_refdown && prl->client_previous_lsn != 0) || (prl->client_undo_next_lsn < last_lsn_tmp_refdown && prl->client_undo_next_lsn != 0))
             {
@@ -549,11 +518,8 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
             }
             else
             {
-                _add_record(ffile, prl);
-
                 std::string_view redo_chunk;
                 std::string_view undo_chunk;
-               
 
                 // DeleteIndexEntryAllocation
                 if (prl->redo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
@@ -585,176 +551,186 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
     }
 }
 
-int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol, const std::string& format, std::string output)
+int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol)
 {
-	if (!commands::helpers::is_ntfs(disk, vol)) return 1;
+    if (!is_ntfs(disk, vol)) return 1;
 
-	utils::ui::title("LogFile from " + disk->name() + " > Volume:" + std::to_string(vol->index()));
+    utils::ui::title("LogFile from " + disk->name() + " > Volume:" + std::to_string(vol->index()));
 
-	std::cout << "[+] Opening " << vol->name() << std::endl;
+    std::shared_ptr<PathFinder> pf = std::make_shared<PathFinder>(vol);
+    std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
 
-	std::shared_ptr<NTFSExplorer> explorer = std::make_shared<NTFSExplorer>(vol);
+    std::cout << "[+] Opening " << vol->name() << std::endl;
 
-	std::cout << "[+] Reading $LogFile record" << std::endl;
-	std::shared_ptr<MFTRecord> record = explorer->mft()->record_from_number(LOG_FILE_NUMBER);
+    std::shared_ptr<NTFSExplorer> explorer = std::make_shared<NTFSExplorer>(vol);
 
-	ULONG64 total_size = record->datasize();
-	std::cout << "[+] $LogFile size : " << utils::format::size(total_size) << std::endl;
+    std::cout << "[+] Reading $LogFile record" << std::endl;
+    std::shared_ptr<MFTRecord> record = explorer->mft()->record_from_number(LOG_FILE_NUMBER);
 
-	std::cout << "[+] Creating " << output << std::endl;
+    ULONG64 total_size = record->datasize();
+    std::cout << "[+] $LogFile size : " << utils::format::size(total_size) << std::endl;
 
-	if (format == "raw")
-	{
-		HANDLE houtput = CreateFileA(output.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-		if (houtput == INVALID_HANDLE_VALUE)
-		{
-			std::cout << "[!] Failed to create output file" << std::endl;
-			return 1;
-		}
+    std::shared_ptr<Buffer<PBYTE>> logfile = record->data();
+    dump_logdata(logfile);
 
-		ULONG64 processed_size = 0;
+    // 恢复全路径
+    for (auto& log : g_records)
+    {
+        // 返回 "volume:\\" 或 "orphan:\\" 开头
+        auto path = pf->get_file_path(utils::strings::to_utf8(log.filename()), log.mft);
+#define UTF8_CODE 65001
+        auto filename = local_to_unicode(path, UTF8_CODE);
+        filename.erase(0, strlen("volume:\\"));
+        if (filename.length() >= MAX_PATH)
+        {
+            continue;
+        }
+        memcpy(log.filename_pointer, filename.c_str(), filename.length() * 2);
+        log.filename_pointer[filename.length()] = 0;
+    }
 
-		for (auto& block : record->process_data(MFT_ATTRIBUTE_DATA_USN_NAME, 1024 * 1024, true))
-		{
-			std::cout << "\r[+] Processing data: " << utils::format::size(processed_size) << "     ";
-			processed_size += block.second;
+    std::cout << std::endl << "[+] Closing volume" << std::endl;
 
-			DWORD written = 0;
-			WriteFile(houtput, block.first, block.second, &written, NULL);
-		}
-		std::cout << "\r[+] Processing data: " << utils::format::size(processed_size);
-
-		CloseHandle(houtput);
-
-		std::cout << "[+] Closing volume" << std::endl;
-	}
-	else if (format == "json" || format == "csv")
-	{
-		std::shared_ptr<Buffer<PBYTE>> logfile = record->data();
-
-		dump_logdata(format, output, logfile);
-	}
-	else
-	{
-		std::cout << "[!] Invalid or missing format" << std::endl;
-		return 2;
-	}
-
-	std::cout << std::endl << "[+] Closing volume" << std::endl;
-
-	return 0;
+    return 0;
 }
 
-// 从dump出来的$LogFile文件中打印所有的日志记录
-int print_logfile_records_file(std::string input, std::shared_ptr<Buffer<PBYTE>> input_data, const std::string& format, std::string output)
+void process_usn(std::shared_ptr<NTFSExplorer> explorer, std::shared_ptr<MFTRecord> record_usn, std::shared_ptr<PathFinder> path_finder, bool full_mode)
 {
-	utils::ui::title("LogFile from " + input);
+    ULONG64 processed_size = 0;
+    ULONG64 processed_count = 0;
 
-	std::cout << "[+] Opening " << input << std::endl;
+    Buffer<PBYTE> clusterBuf((DWORD64)2 * 1024 * 1024);
+    ULONG64 filled_size = 0;
 
-	std::ifstream record(input, std::ios_base::binary | std::ios_base::in);
-	if (!record.is_open())
-	{
-		std::cerr << "无法打开文件:" << input << std::endl;
-		return -1;
-	}
-	// 定位到文件末尾
-	record.seekg(0, std::ios::end);
+    for (auto& block : record_usn->process_data(MFT_ATTRIBUTE_DATA_USN_NAME, explorer->reader()->sizes.cluster_size, true))
+    {
+        processed_size += block.second;
 
-	// 获取文件大小
-	std::streampos fileSize = record.tellg();
+        std::cout << "\r[+] Processing USN records: " << std::to_string(processed_count) << " (" << utils::format::size(processed_size) << ")     ";
 
-	ULONG64 total_size = fileSize;
+        if (filled_size)
+        {
+            break;
+        }
 
-	std::cout << "[+] $LogFile size : " << utils::format::size(total_size) << std::endl;
+        memcpy(clusterBuf.data() + filled_size, block.first, block.second);
+        filled_size += block.second;
 
-	std::cout << "[+] Creating " << output << std::endl;
+        PUSN_RECORD_COMMON_HEADER header = (PUSN_RECORD_COMMON_HEADER)clusterBuf.data();
+        while ((filled_size > 0) && (header->RecordLength <= filled_size))
+        {
+            switch (header->MajorVersion)
+            {
+            case 0:
+            {
+                DWORD i = 0;
+                while ((i < filled_size) && (POINTER_ADD(PWORD, header, i)[0] == 0))
+                {
+                    i += 2;
+                }
+                header = POINTER_ADD(PUSN_RECORD_COMMON_HEADER, header, i);
+                filled_size -= i;
+                break;
+            }
+            case 2:
+            {
+                PUSN_RECORD_V2 usn_record = (PUSN_RECORD_V2)header;
+                if (!(usn_record->Reason & USN_REASON_FILE_DELETE))
+                {
+                    filled_size -= usn_record->RecordLength;
+                    header = POINTER_ADD(PUSN_RECORD_COMMON_HEADER, header, usn_record->RecordLength);
+                    break;
+                }
 
-	if (format == "raw")
-	{
-		std::cerr << "暂时不支持raw模式" << std::endl;
-	}
-	else if (format == "json" || format == "csv")
-	{
-		std::shared_ptr<Buffer<PBYTE>> logfile(new Buffer<PBYTE>(total_size));
-		record.seekg(0);
-		record.read((char*)logfile->address(), total_size);
-		dump_logdata(format, output, logfile);
-	}
-	else
-	{
-		std::cout << "[!] Invalid or missing format" << std::endl;
-		return 2;
-	}
+                std::wstring filename = std::wstring(usn_record->FileName);
+                filename.resize(usn_record->FileNameLength / sizeof(WCHAR));
 
-	std::cout << std::endl << "[+] Closing volume" << std::endl;
+                processed_count++;
 
-	return 0;
+                UsnFileRecord record;
+                record.usn = usn_record->Usn;
+                record.file_reference.mft = usn_record->FileReferenceNumber & 0xffffffffffff;
+                record.file_reference.update_count = usn_record->FileReferenceNumber >> 4;
+                record.parent_file_reference.mft = usn_record->ParentFileReferenceNumber & 0xffffffffffff;
+                record.parent_file_reference.update_count = usn_record->ParentFileReferenceNumber >> 4;
+
+                record.file_attribute = usn_record->FileAttributes;
+                record.reason_flags = usn_record->Reason;
+                record.update_time = *(FILETIME*)(&usn_record->TimeStamp);
+                if (filename.length() >= MAX_PATH)
+                {
+                    break;
+                }
+                if (full_mode)
+                {
+                    // 返回 "volume:\\" 或 "orphan:\\" 开头
+                    auto path = path_finder->get_file_path(utils::strings::to_utf8(filename), usn_record->ParentFileReferenceNumber);
+#define UTF8_CODE 65001
+                    filename = local_to_unicode(path, UTF8_CODE);
+                    filename.erase(0, strlen("volume:\\"));
+                }
+
+                if (filename.length() >= MAX_PATH)
+                {
+                    break;
+                }
+                memcpy(record.filename, filename.c_str(), filename.length()*2);
+                record.filename[filename.length()] = 0;
+                g_usn_records.emplace_back(record);
+
+                filled_size -= usn_record->RecordLength;
+                header = POINTER_ADD(PUSN_RECORD_COMMON_HEADER, header, usn_record->RecordLength);
+                break;
+            }
+            default:
+                return;
+            }
+        }
+
+        if (filled_size <= clusterBuf.size())
+        {
+            memcpy(clusterBuf.data(), header, (size_t)filled_size);
+        }
+    }
+    std::cout << "\r[+] Processing USN records: " << std::to_string(processed_count) << " (" << utils::format::size(processed_size) << ")     ";
 }
 
-namespace commands
+int print_usn_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol)
 {
-	namespace logfile
-	{
-		int dispatch(std::shared_ptr<Options> opts)
-		{
-			std::ios_base::fmtflags flag_backup(std::cout.flags());
+    if (!is_ntfs(disk, vol)) return 1;
 
-			if (opts->from != "")
-			{
-				std::shared_ptr<Buffer<PBYTE>> filebuf = Buffer<PBYTE>::from_file(utils::strings::from_string(opts->from));
-				if (filebuf != nullptr)
-				{
-					if (opts->output != "")
-					{
-						if (opts->format == "") opts->format = "csv";
-					}
+    utils::ui::title("Dump USN journal for " + disk->name() + " > Volume:" + std::to_string(vol->index()));
 
-					print_logfile_records_file(opts->from, filebuf, opts->format, opts->output);
-				}
-				else
-				{
-					invalid_option(opts, "from", opts->from);
-				}
-			}
-			else
-			{
-				std::shared_ptr<Disk> disk = get_disk(opts);
-				if (disk != nullptr)
-				{
-					std::shared_ptr<Volume> volume = disk->volumes(opts->volume);
-					if (volume != nullptr)
-					{
-						if (opts->output != "")
-						{
-							if (opts->format == "") opts->format = "raw";
+    std::shared_ptr<PathFinder> pf = nullptr;   
+    {
+        pf = std::make_shared<PathFinder>(vol);
+        std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
+    }
 
-							print_logfile_records(disk, volume, opts->format, opts->output);
-						}
-						else
-						{
-							invalid_option(opts, "output", opts->output);
-						}
-					}
-					else
-					{
-						invalid_option(opts, "volume", opts->volume);
-					}
-				}
-				else
-				{
-					invalid_option(opts, "disk", opts->disk);
-				}
-			}
+    std::cout << "[+] Opening " << vol->name() << std::endl;
+    std::shared_ptr<NTFSExplorer> explorer = std::make_shared<NTFSExplorer>(vol);
 
-			std::cout.flags(flag_backup);
-			return 0;
-		}
-	}
+    std::cout << "[+] Finding $Extend\\$UsnJrnl record" << std::endl;
+    std::shared_ptr<MFTRecord> record = explorer->mft()->record_from_path("\\$Extend\\$UsnJrnl");
+    if (record == nullptr)
+    {
+        std::cout << "[!] Not found" << std::endl;
+        return 2;
+    }
+    std::cout << "[+] Found in file record: " << std::to_string(record->header()->MFTRecordIndex) << std::endl;
+
+    ULONG64 total_size = record->datasize(MFT_ATTRIBUTE_DATA_USN_NAME, true);
+    std::cout << "[+] $J stream size: " << utils::format::size(total_size) << " (could be sparse)" << std::endl;
+
+    process_usn(explorer, record, pf, true);
+
+    std::cout << std::endl << "[+] Closing volume" << std::endl;
+
+    return 0;
 }
 
 // AttrType
-int64_t My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
+bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
 {
     const char* pBuffer = Entry.data();
     const auto pEntry = reinterpret_cast<const LogFileIndexEntry*>(pBuffer);
@@ -775,7 +751,16 @@ int64_t My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
         return false;
     }
 
-    if (option.VerboseOn)
+    // 仅undo并且undo是恢复文件时才有效
+    if (!IsRedo && AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
+    {
+        LogFileFileRecord record;
+        memcpy(&record, pBuffer, Entry.size());
+        record.filename_pointer[record.filename_length] = 0;
+        g_records.emplace_back(record);
+    }
+
+#ifdef _DEBUG
     { /*If then*/
         _DumpOutput("_Decode_IndexEntry():");
 
@@ -788,24 +773,25 @@ int64_t My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
         std::string Indx_NameSpace;
         switch (pEntry->filename_namespace)
         {
-            case 0:
-                Indx_NameSpace = "POSIX";
-                break;
-            case 1:
-                Indx_NameSpace = "WIN32";
-                break;
-            case 2:
-                Indx_NameSpace = "DOS";
-                break;
-            case 3:
-                Indx_NameSpace = "DOS+WIN32";
-                break;
-            default:
-                assert(false);
+        case 0:
+            Indx_NameSpace = "POSIX";
+            break;
+        case 1:
+            Indx_NameSpace = "WIN32";
+            break;
+        case 2:
+            Indx_NameSpace = "DOS";
+            break;
+        case 3:
+            Indx_NameSpace = "DOS+WIN32";
+            break;
+        default:
+            assert(false);
         }
 
         auto filename = pEntry->filename();
     }
+#endif
 
     if (AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ROOT || AttrType == LOG_RECORD_OP_DELETE_INDEX_ENTRY_ROOT)
     { /*If Then in one Line*/
@@ -817,4 +803,68 @@ int64_t My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
         //result.AttributeString = "$INDEX_ALLOCATION";
     }
     return true;
+}
+
+
+extern "C" __declspec(dllexport) int InitNtfsTool()
+{
+	if (!utils::processes::elevated(GetCurrentProcess()))
+	{
+		std::cerr << "Administrator rights are required to read physical drives" << std::endl;
+		return 1;
+	}
+    return 0;
+}
+extern "C" __declspec(dllexport) void DeinitNtfsInfo()
+{
+
+}
+
+extern "C" __declspec(dllexport) int GetDeleteRecordsByFileRecord(int disk_index, uint64_t volume_offset, LogFileFileRecord** records, int* count)
+{
+    g_records.clear();
+    std::shared_ptr<Disk> disk = core::win::disks::by_index(disk_index);;
+    if (disk != nullptr)
+    {
+        for (auto volume: disk->volumes())
+        {
+            if (volume != nullptr && volume->offset() == volume_offset)
+            {
+                print_logfile_records(disk, volume);
+                *records = g_records.data();
+                *count = g_records.size();
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int GetDeleteRecords(int disk_index, uint64_t volume_offset, UsnFileRecord** records, int* count)
+{
+    g_usn_records.clear();
+    std::shared_ptr<Disk> disk = core::win::disks::by_index(disk_index);;
+    if (disk != nullptr)
+    {
+        for (auto volume : disk->volumes())
+        {
+            if (volume != nullptr && volume->offset() == volume_offset)
+            {
+                print_usn_records(disk, volume);
+
+                *records = g_usn_records.data();
+                *count = g_usn_records.size();
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+void main()
+{
+    LogFileFileRecord* records = nullptr;
+    int count = 0;
+    GetDeleteRecordsByFileRecord(2, 6, &records, &count);
+    std::cout << "records: " << count;
 }

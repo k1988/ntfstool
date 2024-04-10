@@ -49,7 +49,6 @@
     <ClInclude Include="Sources\EFS\private_key.h" />
     <ClInclude Include="Sources\EFS\private_key_enc.h" />
     <ClInclude Include="Sources\EFS\public_key.h" />
-    <ClInclude Include="Sources\libntfsinfo.h" />
     <ClInclude Include="Sources\NTFS\ntfs.h" />
     <ClInclude Include="Sources\NTFS\ntfs_explorer.h" />
     <ClInclude Include="Sources\NTFS\ntfs_index_entry.h" />
@@ -80,6 +79,34 @@
     <ClCompile Include="Sources\Bitlocker\password.cpp" />
     <ClCompile Include="Sources\Bitlocker\recovery.cpp" />
     <ClCompile Include="Sources\Bitlocker\unprotected.cpp" />
+    <ClCompile Include="Sources\Commands\commands.cpp" />
+    <ClCompile Include="Sources\Commands\command_bitlocker.decrypt.cpp" />
+    <ClCompile Include="Sources\Commands\command_bitlocker.info.cpp" />
+    <ClCompile Include="Sources\Commands\command_mft.btree.cpp" />
+    <ClCompile Include="Sources\Commands\command_efs.backup.cpp" />
+    <ClCompile Include="Sources\Commands\command_efs.certificate.cpp" />
+    <ClCompile Include="Sources\Commands\command_efs.decrypt.cpp" />
+    <ClCompile Include="Sources\Commands\command_efs.key.cpp" />
+    <ClCompile Include="Sources\Commands\command_efs.masterkey.cpp" />
+    <ClCompile Include="Sources\Commands\command_extract.cpp" />
+    <ClCompile Include="Sources\Commands\command_image.cpp" />
+    <ClCompile Include="Sources\Commands\command_logfile.dump.cpp" />
+    <ClCompile Include="Sources\Commands\command_mft.dump.cpp" />
+    <ClCompile Include="Sources\Commands\command_reparse.cpp" />
+    <ClCompile Include="Sources\Commands\command_shadow.cpp" />
+    <ClCompile Include="Sources\Commands\command_shell.cpp" />
+    <ClCompile Include="Sources\Commands\command_bitlocker.fve.cpp" />
+    <ClCompile Include="Sources\Commands\command_mft.record.cpp" />
+    <ClCompile Include="Sources\Commands\command_smart.cpp" />
+    <ClCompile Include="Sources\Commands\command_streams.cpp" />
+    <ClCompile Include="Sources\Commands\command_undelete.cpp" />
+    <ClCompile Include="Sources\Commands\command_usn.analyze.cpp" />
+    <ClCompile Include="Sources\Commands\command_usn.dump.cpp" />
+    <ClCompile Include="Sources\Commands\command_vbr.cpp" />
+    <ClCompile Include="Sources\Commands\command_gpt.cpp" />
+    <ClCompile Include="Sources\Commands\command_help.cpp" />
+    <ClCompile Include="Sources\Commands\command_info.cpp" />
+    <ClCompile Include="Sources\Commands\command_mbr.cpp" />
     <ClCompile Include="Sources\Commands\ntfsdump_logfile_ext.cpp" />
     <ClCompile Include="Sources\Compression\lznt1.cpp" />
     <ClCompile Include="Sources\Compression\lzx.cpp" />
@@ -96,12 +123,13 @@
     <ClCompile Include="Sources\EFS\private_key.cpp" />
     <ClCompile Include="Sources\EFS\private_key_enc.cpp" />
     <ClCompile Include="Sources\EFS\public_key.cpp" />
-    <ClCompile Include="Sources\dllmain.cpp" />
+    <ClCompile Include="Sources\main.cpp" />
     <ClCompile Include="Sources\NTFS\ntfs_explorer.cpp" />
     <ClCompile Include="Sources\NTFS\ntfs_index_entry.cpp" />
     <ClCompile Include="Sources\NTFS\ntfs_mft.cpp" />
     <ClCompile Include="Sources\NTFS\ntfs_mft_record.cpp" />
     <ClCompile Include="Sources\NTFS\ntfs_reader.cpp" />
+    <ClCompile Include="Sources\options.cpp" />
     <ClCompile Include="Sources\Utils\constant_names.cpp" />
     <ClCompile Include="Sources\Utils\crash_handler.cpp" />
     <ClCompile Include="Sources\Utils\csv_file.cpp" />
@@ -121,10 +149,10 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
-    <ProjectGuid>{ED7F20A1-18AD-40D1-9CAE-5D613616F2F7}</ProjectGuid>
+    <ProjectGuid>{867269EC-FEE3-43A9-B1FA-EF1316A37C43}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ProjectName>libntfsinfo</ProjectName>
+    <ProjectName>ntfstool</ProjectName>
     <VcpkgTriplet Condition="'$(Platform)'=='Win32'">
     </VcpkgTriplet>
     <VcpkgTriplet Condition="'$(Platform)'=='x64'">
@@ -132,27 +160,27 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <EnableASAN>
     </EnableASAN>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <EnableASAN>false</EnableASAN>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <EnableASAN>
     </EnableASAN>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <EnableASAN>false</EnableASAN>
@@ -205,7 +233,7 @@
     <EnableClangTidyCodeAnalysis>false</EnableClangTidyCodeAnalysis>
     <EnableMicrosoftCodeAnalysis>true</EnableMicrosoftCodeAnalysis>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
-    <TargetName>$(ProjectName)</TargetName>
+    <TargetName>$(ProjectName).$(PlatformTarget)</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)Builds\$(Configuration)\$(PlatformTarget)\</OutDir>
@@ -215,20 +243,20 @@
     </LinkIncremental>
     <EnableClangTidyCodeAnalysis>false</EnableClangTidyCodeAnalysis>
     <EnableMicrosoftCodeAnalysis>false</EnableMicrosoftCodeAnalysis>
-    <TargetName>$(ProjectName)</TargetName>
+    <TargetName>$(ProjectName).$(PlatformTarget)</TargetName>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <VcpkgUseStatic>true</VcpkgUseStatic>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgUseStatic>false</VcpkgUseStatic>
     <VcpkgUseMD>true</VcpkgUseMD>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <VcpkgUseStatic>true</VcpkgUseStatic>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <VcpkgUseStatic>false</VcpkgUseStatic>
+    <VcpkgUseStatic>true</VcpkgUseStatic>
     <VcpkgUseMD>true</VcpkgUseMD>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg">
@@ -237,7 +265,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINSOCKAPI_;_CONSOLE;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
@@ -266,7 +294,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <PreprocessorDefinitions>WIN32;_WINSOCKAPI_;_SILENCE_CLANG_COROUTINE_MESSAGE;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalIncludeDirectories>Sources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -299,7 +327,6 @@
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SubSystem>Console</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <ClCompile>
       <AdditionalIncludeDirectories>Sources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -330,7 +357,7 @@
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
       <SubSystem>Console</SubSystem>
     </Link>
   </ItemDefinitionGroup>
