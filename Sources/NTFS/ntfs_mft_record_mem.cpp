@@ -1,4 +1,4 @@
-#include "ntfs_mft_record.h"
+#include "ntfs_mft_record_mem.h"
 
 #include <memory>
 
@@ -14,48 +14,39 @@
 #include <Compression/xpress.h>
 #include <Compression/lzx.h>
 
-
-MFTRecord::MFTRecord(PMFT_RECORD_HEADER pRecordHeader, MFT* mft, std::shared_ptr<NTFSReader> reader)
+MFTRecordMem::MFTRecordMem(std::string_view buffer, NTFSReader::NtfsSizes size) :
+	_ntfsSize(size),
+	_data(buffer)
 {
-	_reader = reader;
-	_mft = mft;
+	PMFT_RECORD_HEADER pRecordHeader = (PMFT_RECORD_HEADER)_data.data();
+	_record = std::make_shared<Buffer<PMFT_RECORD_HEADER>>(_ntfsSize.record_size);
+	memcpy(_record->data(), pRecordHeader, _ntfsSize.record_size);
 
-	if (pRecordHeader != NULL)
-	{
-		_record = std::make_shared<Buffer<PMFT_RECORD_HEADER>>(_reader->sizes.record_size);
-		memcpy(_record->data(), pRecordHeader, _reader->sizes.record_size);
-
-		apply_fixups(_record->data(), _record->size(), _record->data()->updateOffset, _record->data()->updateNumber);
-	}
+	apply_fixups(_record->data(), _record->size(), _record->data()->updateOffset, _record->data()->updateNumber);
 }
 
-MFTRecord::~MFTRecord()
+MFTRecordMem::~MFTRecordMem()
 {
 	_record = nullptr;
 }
 
-uint64_t MFTRecord::raw_address()
-{
-	return _reader->get_volume_offset() + (_reader->boot_record()->MFTCluster * _reader->sizes.cluster_size + (_record->data()->MFTRecordIndex * _reader->sizes.record_size));
-}
-
-uint64_t MFTRecord::raw_address(PMFT_RECORD_ATTRIBUTE_HEADER pAttr, uint64_t offset)
+uint64_t MFTRecordMem::raw_address(PMFT_RECORD_ATTRIBUTE_HEADER pAttr, uint64_t offset)
 {
 	for (auto& dt : read_dataruns(pAttr))
 	{
-		if (offset >= (dt.length * _reader->sizes.cluster_size))
+		if (offset >= (dt.length * _ntfsSize.cluster_size))
 		{
-			offset -= (dt.length * _reader->sizes.cluster_size);
+			offset -= (dt.length * _ntfsSize.cluster_size);
 		}
 		else
 		{
-			return (dt.offset * _reader->sizes.cluster_size) + offset;
+			return (dt.offset * _ntfsSize.cluster_size) + offset;
 		}
 	}
 	return 0;
 }
 
-ULONG64 MFTRecord::datasize(std::string stream_name, bool real_size)
+ULONG64 MFTRecordMem::datasize(std::string stream_name, bool real_size)
 {
 	if (_record->data()->flag & FILE_RECORD_FLAG_DIR)
 	{
@@ -95,7 +86,8 @@ ULONG64 MFTRecord::datasize(std::string stream_name, bool real_size)
 						{
 							if ((pAttr->recordNumber & 0xffffffffffff) != (header()->MFTRecordIndex & 0xffffffffffff))
 							{
-								std::shared_ptr<MFTRecord> extRecordHeader = _mft->record_from_number(pAttr->recordNumber & 0xffffffffffff);
+								//std::shared_ptr<MFTRecordMem> extRecordHeader = _mft->record_from_number(pAttr->recordNumber & 0xffffffffffff);
+								std::shared_ptr<MFTRecordMem> extRecordHeader;
 								if (extRecordHeader != nullptr)
 								{
 									return extRecordHeader->datasize(stream_name, real_size);
@@ -127,7 +119,7 @@ ULONG64 MFTRecord::datasize(std::string stream_name, bool real_size)
 	return 0;
 }
 
-std::map<DWORD64, PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK> MFTRecord::_parse_index_block(std::shared_ptr<Buffer<PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK>> pIndexBlock)
+std::map<DWORD64, PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK> MFTRecordMem::_parse_index_block(std::shared_ptr<Buffer<PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK>> pIndexBlock)
 {
 	std::map<DWORD64, PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK> mapVCNToIndexBlock;
 
@@ -190,7 +182,7 @@ static std::vector<std::shared_ptr<IndexEntry>> parse_entries(PMFT_RECORD_ATTRIB
 	return ret;
 }
 
-std::wstring MFTRecord::filename()
+std::wstring MFTRecordMem::filename()
 {
 	PMFT_RECORD_ATTRIBUTE_HEADER pattr = attribute_header($FILE_NAME, "");
 	if (pattr != nullptr)
@@ -218,7 +210,7 @@ std::wstring MFTRecord::filename()
 	return filename;
 }
 
-std::vector<std::shared_ptr<IndexEntry>> MFTRecord::index()
+std::vector<std::shared_ptr<IndexEntry>> MFTRecordMem::index()
 {
 	std::vector<std::shared_ptr<IndexEntry>> ret;
 
@@ -246,7 +238,7 @@ std::vector<std::shared_ptr<IndexEntry>> MFTRecord::index()
 						DWORD64 next_inode = pAttrListI->recordNumber & 0xffffffffffff;
 						if (next_inode != _record->data()->MFTRecordIndex)
 						{
-							std::shared_ptr<MFTRecord> extRecordHeader = _mft->record_from_number(next_inode);
+							std::shared_ptr<MFTRecordMem> extRecordHeader;// = _mft->record_from_number(next_inode);
 							return extRecordHeader->index();
 						}
 					}
@@ -292,7 +284,7 @@ std::vector<std::shared_ptr<IndexEntry>> MFTRecord::index()
 	return ret;
 }
 
-bool MFTRecord::is_valid(PMFT_RECORD_HEADER pmfth)
+bool MFTRecordMem::is_valid(PMFT_RECORD_HEADER pmfth)
 {
 	return (
 		(memcmp(pmfth->signature, "FILE", 4) == 0) &&
@@ -304,7 +296,7 @@ bool MFTRecord::is_valid(PMFT_RECORD_HEADER pmfth)
 
 }
 
-std::vector<MFT_DATARUN> MFTRecord::read_dataruns(PMFT_RECORD_ATTRIBUTE_HEADER pAttribute)
+std::vector<MFT_DATARUN> MFTRecordMem::read_dataruns(PMFT_RECORD_ATTRIBUTE_HEADER pAttribute)
 {
 	std::vector<MFT_DATARUN> result;
 	LPBYTE runList = POINTER_ADD(LPBYTE, pAttribute, pAttribute->Form.Nonresident.MappingPairsOffset);
@@ -342,18 +334,18 @@ std::vector<MFT_DATARUN> MFTRecord::read_dataruns(PMFT_RECORD_ATTRIBUTE_HEADER p
 	return result;
 }
 
-void MFTRecord::apply_fixups(PVOID buffer, DWORD buffer_size, WORD updateOffset, WORD updateSize)
+void MFTRecordMem::apply_fixups(PVOID buffer, DWORD buffer_size, WORD updateOffset, WORD updateSize)
 {
 	PWORD usarray = POINTER_ADD(PWORD, buffer, updateOffset);
 	PWORD sector = (PWORD)buffer;
 
-	DWORD offset = _reader->sizes.sector_size;
+	DWORD offset = _ntfsSize.sector_size;
 	for (DWORD i = 1; i < updateSize; i++)
 	{
 		if (offset <= buffer_size)
 		{
 			sector[(offset - 2) / sizeof(WORD)] = usarray[i];
-			offset += _reader->sizes.sector_size;
+			offset += _ntfsSize.sector_size;
 		}
 		else
 		{
@@ -362,7 +354,7 @@ void MFTRecord::apply_fixups(PVOID buffer, DWORD buffer_size, WORD updateOffset,
 	}
 }
 
-PMFT_RECORD_ATTRIBUTE_HEADER MFTRecord::attribute_header(DWORD type, std::string name, int index)
+PMFT_RECORD_ATTRIBUTE_HEADER MFTRecordMem::attribute_header(DWORD type, std::string name, int index)
 {
 	PMFT_RECORD_ATTRIBUTE_HEADER pAttribute = POINTER_ADD(PMFT_RECORD_ATTRIBUTE_HEADER, _record->data(), _record->data()->attributeOffset);
 
@@ -388,7 +380,7 @@ PMFT_RECORD_ATTRIBUTE_HEADER MFTRecord::attribute_header(DWORD type, std::string
 	return nullptr;
 }
 
-ULONG64 MFTRecord::data_to_file(std::wstring dest_filename, std::string stream_name, bool skip_sparse)
+ULONG64 MFTRecordMem::data_to_file(std::wstring dest_filename, std::string stream_name, bool skip_sparse)
 {
 	ULONG64 written_bytes = 0ULL;
 
@@ -417,33 +409,7 @@ ULONG64 MFTRecord::data_to_file(std::wstring dest_filename, std::string stream_n
 	return written_bytes;
 }
 
-ULONG64 MFTRecord::data_to_callback(int(* on_data)(char* buffer, int size), std::string stream_name, bool skip_sparse)
-{
-	ULONG64 written_bytes = 0ULL;
-	if (on_data != nullptr)
-	{
-		for (auto& data_block : process_data(stream_name, 1024 * 1024, skip_sparse))
-		{
-			DWORD written_block = data_block.second;
-			if (on_data((char*)data_block.first, data_block.second) == 0)
-			{
-				std::cout << "[!] WriteFile Cancel" << std::endl;
-				break;
-			}
-			else
-			{
-				written_bytes += written_block;
-			}
-		}
-	}
-	else
-	{
-		std::cout << "[!] CreateFile failed (0x" << utils::format::hex(GetLastError()) << ")" << std::endl;
-	}
-	return written_bytes;
-}
-
-cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::string stream_name, DWORD block_size, bool skip_sparse)
+cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecordMem::_process_data_raw(std::string stream_name, DWORD block_size, bool skip_sparse)
 {
 	PMFT_RECORD_ATTRIBUTE_HEADER pAttributeData = attribute_header($DATA, stream_name);
 	if (pAttributeData != NULL)
@@ -492,7 +458,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 						Buffer<PBYTE> buffer_decompressed(static_cast<DWORD>(block_size));
 
 						RtlZeroMemory(buffer_decompressed.data(), block_size);
-						DWORD64 total_size = run.length * _reader->sizes.cluster_size;
+						DWORD64 total_size = run.length * _ntfsSize.cluster_size;
 						for (DWORD64 i = 0; i < total_size; i += block_size)
 						{
 							fixed_blocksize = DWORD(min(pAttributeData->Form.Nonresident.FileSize - writeSize, block_size));
@@ -502,16 +468,18 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 					}
 					else
 					{
-						_reader->seek(run.offset * _reader->sizes.cluster_size);
-						DWORD64 total_size = run.length * _reader->sizes.cluster_size;
+						//_reader->seek(run.offset * _ntfsSize.cluster_size);
+						DWORD64 total_size = run.length * _ntfsSize.cluster_size;
 
 						std::shared_ptr<Buffer<PBYTE>> buffer_compressed = std::make_shared<Buffer<PBYTE>>(static_cast<DWORD>(total_size));
-						if (!_reader->read(buffer_compressed->data(), static_cast<DWORD>(total_size)))
-						{
+						// FIXME k1988 add 
+						memcpy(buffer_compressed->data(), _data.data() + run.offset * _ntfsSize.cluster_size, static_cast<DWORD>(total_size));
+						//if (!_reader->read(buffer_compressed->data(), static_cast<DWORD>(total_size)))
+						/*{
 							std::cout << "[!] ReadFile compressed failed" << std::endl;
 							err = true;
 							break;
-						}
+						}*/
 
 						if (run.length > 0x10) // Uncompressed
 						{
@@ -600,7 +568,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 						if (!skip_sparse)
 						{
 							RtlZeroMemory(buffer.data(), block_size);
-							DWORD64 total_size = run.length * _reader->sizes.cluster_size;
+							DWORD64 total_size = run.length * _ntfsSize.cluster_size;
 							for (DWORD64 i = 0; i < total_size; i += block_size)
 							{
 								fixed_blocksize = DWORD(min(pAttributeData->Form.Nonresident.FileSize - writeSize, block_size));
@@ -611,12 +579,12 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 					}
 					else
 					{
-						_reader->seek(run.offset * _reader->sizes.cluster_size);
-						DWORD64 total_size = run.length * _reader->sizes.cluster_size;
+					//	_reader->seek(run.offset * _ntfsSize.cluster_size);
+						DWORD64 total_size = run.length * _ntfsSize.cluster_size;
 						DWORD64 read_block_size = static_cast<DWORD>(min(block_size, total_size));
 						for (DWORD64 i = 0; i < total_size; i += read_block_size)
 						{
-							if (!_reader->read(buffer.data(), static_cast<DWORD>(read_block_size)))
+							//if (!_reader->read(buffer.data(), static_cast<DWORD>(read_block_size)))
 							{
 								std::cout << "[!] ReadFile failed" << std::endl;
 								err = true;
@@ -654,7 +622,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 						DWORD64 next_inode = pAttrListI->recordNumber & 0xffffffffffff;
 						if (next_inode != _record->data()->MFTRecordIndex)
 						{
-							std::shared_ptr<MFTRecord> extRecordHeader = _mft->record_from_number(pAttrListI->recordNumber & 0xffffffffffff);
+							std::shared_ptr<MFTRecordMem> extRecordHeader;// = _mft->record_from_number(pAttrListI->recordNumber & 0xffffffffffff);
 							for (std::pair<PBYTE, DWORD> b : extRecordHeader->_process_data_raw(stream_name, block_size, skip_sparse))
 							{
 								co_yield b;
@@ -679,7 +647,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::_process_data_raw(std::st
 	}
 }
 
-cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::process_data(std::string stream_name, DWORD block_size, bool skip_sparse)
+cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecordMem::process_data(std::string stream_name, DWORD block_size, bool skip_sparse)
 {
 	ULONG64 final_datasize = datasize(stream_name, true);
 	bool check_size = final_datasize != 0; // ex: no real size for usn
@@ -700,7 +668,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::process_data(std::string 
 	}
 }
 
-cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::process_virtual_data(std::string stream_name, DWORD block_size, bool skip_sparse)
+cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecordMem::process_virtual_data(std::string stream_name, DWORD block_size, bool skip_sparse)
 {
 	ULONG64 final_datasize = datasize(stream_name, false);
 	bool check_size = final_datasize != 0; // ex: no real size for usn
@@ -721,7 +689,7 @@ cppcoro::generator<std::pair<PBYTE, DWORD>> MFTRecord::process_virtual_data(std:
 	}
 }
 
-std::shared_ptr<Buffer<PBYTE>> MFTRecord::data(std::string stream_name, bool real_size)
+std::shared_ptr<Buffer<PBYTE>> MFTRecordMem::data(std::string stream_name, bool real_size)
 {
 	std::shared_ptr<Buffer<PBYTE>> ret = nullptr;
 
@@ -744,7 +712,7 @@ std::shared_ptr<Buffer<PBYTE>> MFTRecord::data(std::string stream_name, bool rea
 					PMFT_RECORD_ATTRIBUTE pAttrListI = POINTER_ADD(PMFT_RECORD_ATTRIBUTE, attribute_list_data->data(), offset);
 					if (pAttrListI->typeID == $DATA)
 					{
-						std::shared_ptr<MFTRecord> extRecordHeader = _mft->record_from_number(pAttrListI->recordNumber & 0xffffffffffff);
+						std::shared_ptr<MFTRecordMem> extRecordHeader;// = _mft->record_from_number(pAttrListI->recordNumber & 0xffffffffffff);
 						return extRecordHeader->data(stream_name);
 					}
 
@@ -764,7 +732,7 @@ std::shared_ptr<Buffer<PBYTE>> MFTRecord::data(std::string stream_name, bool rea
 	return ret;
 }
 
-std::vector<std::string> MFTRecord::ads_names()
+std::vector<std::string> MFTRecordMem::ads_names()
 {
 	std::vector<std::string> ret;
 

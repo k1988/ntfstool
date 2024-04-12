@@ -24,29 +24,31 @@
 #define MAGIC_FILE 0x454C4946
 #define MAGIC_INDX 0x58444E49
 
-class MFTRecord
+/**
+ * 对内存中的MFT记录做解析
+ */
+class MFTRecordMem
 {
 private:
-	std::shared_ptr<NTFSReader> _reader;
-
 	std::shared_ptr<Buffer<PMFT_RECORD_HEADER>> _record = nullptr;
 
-	MFT* _mft = nullptr;
+	NTFSReader::NtfsSizes _ntfsSize;
+
+	std::string_view _data;
 
 	std::map<DWORD64, PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK> _parse_index_block(std::shared_ptr<Buffer<PMFT_RECORD_ATTRIBUTE_INDEX_BLOCK>> pIndexBlock);
 
 	cppcoro::generator<std::pair<PBYTE, DWORD>> _process_data_raw(std::string stream_name = "", DWORD blocksize = 1024 * 1024, bool skip_sparse = false);
 
 public:
+    MFTRecordMem(std::string_view buffer, NTFSReader::NtfsSizes size);
 
-	MFTRecord(PMFT_RECORD_HEADER pRH, MFT* mft, std::shared_ptr<NTFSReader> reader);
-	~MFTRecord();
-
-	uint64_t raw_address();
+	MFTRecordMem(PMFT_RECORD_HEADER pRH, MFT* mft, std::shared_ptr<NTFSReader> reader);
+	~MFTRecordMem();
 
 	uint64_t raw_address(PMFT_RECORD_ATTRIBUTE_HEADER pAttr, uint64_t offset);
 
-	PMFT_RECORD_HEADER header() { return _record->data(); }
+	PMFT_RECORD_HEADER header() { return (PMFT_RECORD_HEADER)_data.data(); }
 
 	void apply_fixups(PVOID buffer, DWORD buffer_size, WORD updateOffset, WORD updateSize);
 
@@ -80,14 +82,15 @@ public:
 				{
 					for (ULONGLONG i = 0; i < run.length; i++)
 					{
-						readSize += min(filesize - readSize, _reader->sizes.cluster_size);
+						readSize += min(filesize - readSize, _ntfsSize.cluster_size);
 					}
 				}
 				else
 				{
-					_reader->seek(run.offset * _reader->sizes.cluster_size);
+				//	_reader->seek(run.offset * _ntfsSize.cluster_size);
 
-					if (!_reader->read(POINTER_ADD(PBYTE, ret->data(), DWORD(readSize)), static_cast<DWORD>(run.length) * _reader->sizes.cluster_size))
+					//if (!_reader->read(POINTER_ADD(PBYTE, ret->data(), DWORD(readSize)), static_cast<DWORD>(run.length) * _ntfsSize.cluster_size))
+					if (true)
 					{
 						std::cout << "[!] ReadFile failed" << std::endl;
 						err = true;
@@ -95,7 +98,7 @@ public:
 					}
 					else
 					{
-						readSize += min(filesize - readSize, static_cast<DWORD>(run.length) * _reader->sizes.cluster_size);
+						readSize += min(filesize - readSize, static_cast<DWORD>(run.length) * _ntfsSize.cluster_size);
 					}
 				}
 			}
@@ -121,9 +124,6 @@ public:
 	std::shared_ptr<Buffer<PBYTE>> data(std::string stream_name = "", bool real_size = true);
 
 	ULONG64 data_to_file(std::wstring dest_filename, std::string stream_name = "", bool skip_sparse = false);
-
-	// 读取data区域并使用回调
-	ULONG64 data_to_callback(int (*on_data)(char* buffer, int size), std::string stream_name = "", bool skip_sparse = false);
 
 	cppcoro::generator<std::pair<PBYTE, DWORD>> process_data(std::string stream_name = "", DWORD blocksize = 1024 * 1024, bool skip_sparse = false);
 

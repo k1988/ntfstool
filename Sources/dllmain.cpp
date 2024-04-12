@@ -14,6 +14,7 @@
 #include "libntfsinfo.h"
 #include "NTFS/ntfs.h"
 #include "NTFS/ntfs_explorer.h"
+#include "NTFS/ntfs_mft_record_mem.h"
 #include "Utils/constant_names.h"
 #include "Utils/path_finder.h"
 #include "Utils/table.h"
@@ -32,6 +33,8 @@
 
 std::vector<LogFileFileRecord> g_records;
 std::vector<UsnFileRecord> g_usn_records;
+
+//#define OPEN_COUT 
 
 std::wstring LogFileFileRecord::filename() const
 {
@@ -146,7 +149,9 @@ public:
 #define _DumpOutputPrintf(...) printf("[CPP] " __VA_ARGS__)
 static inline void _DumpOutput(std::string msg)
 {
+#ifdef OPEN_COUT 
     std::cout << "[CPP] " << msg << std::endl;
+#endif
     //_DumpOutputPrintf(msg.c_str());
 }
 #else
@@ -155,6 +160,47 @@ static inline void _DumpOutput(std::string msg)
 #endif
 
 bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo);
+
+void ParseMft(std::string_view Entry, std::shared_ptr<NTFSReader> reader)
+{
+    const char* pBuffer = Entry.data();
+    const auto pEntry = PMFT_RECORD_HEADER(pBuffer);
+    if (!MFTRecordMem::is_valid(pEntry))
+    {
+        return;
+    }
+
+    MFTRecordMem mft(Entry, reader->sizes);
+    auto header = mft.attribute_header($FILE_NAME);
+    if (header != nullptr)
+    {
+        auto pattr_filename = POINTER_ADD(PMFT_RECORD_ATTRIBUTE_FILENAME, header, header->Form.Resident.ValueOffset);
+
+        // 复制数据结构
+        LogFileFileRecord record;
+        record.mft = pEntry->MFTRecordIndex | (uint64_t)pEntry->sequenceNumber << 48;
+        record.file_flags = pattr_filename->FileAttributes;
+        record.mft_parent = pattr_filename->ParentDirectory.FileRecordNumber | ((uint64_t)pattr_filename->ParentDirectory.SequenceNumber << 48);
+        record.create_time = *(FILETIME*)(&pattr_filename->CreationTime);
+        record.access_time = *(FILETIME*)(&pattr_filename->LastAccessTime);
+        record.modify_time = *(FILETIME*)(&pattr_filename->LastWriteTime);
+        record.unknown_time = *(FILETIME*)(&pattr_filename->ChangeTime);
+        record.allocate_size = pattr_filename->AllocatedSize;
+        record.real_size = pattr_filename->DataSize;
+        record.file_flags_data.EaSize = pattr_filename->Extended.EaInfo.PackedEaSize;
+        record.filename_length = pattr_filename->NameLength;
+        record.filename_namespace = pattr_filename->NameType;
+
+        if (record.filename_length < MAX_PATH)
+        {
+            auto filename = mft.filename();
+            memcpy(record.filename_pointer, filename.c_str(), record.filename_length * 2);
+            record.filename_pointer[record.filename_length] = 0;
+
+            g_records.emplace_back(record);
+        }
+    }
+}
 
 /**
  * 数据结构修复
@@ -241,8 +287,10 @@ void _add_record(std::shared_ptr<FormatteddFile> ffile, PRECORD_LOG rl)
  * @param logfile 日志文件的内存数据
  *
 */
-void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
+void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData, std::shared_ptr<NTFSExplorer> explorer)
 {
+    auto reader = explorer->reader();
+
     PRESTART_PAGE_HEADER newest_restart_header = find_newest_restart_page(logFileData->data());
     PRESTART_AREA newest_restart_area = POINTER_ADD(PRESTART_AREA, newest_restart_header, newest_restart_header->restart_area_offset);
 
@@ -276,6 +324,8 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
     for (DWORD offset = /*4*/ 2 * newest_restart_header->log_page_size; offset < logFileData->size(); offset += newest_restart_header->log_page_size)
     {
         PRECORD_PAGE_HEADER prh = POINTER_ADD(PRECORD_PAGE_HEADER, logFileData->data(), offset);
+
+        // 这种方式,容易漏掉多跨页的Record Page?? 应该不会,因为分页后也是RCRD开头
         if (memcmp(prh->magic, "RCRD", 4) != 0) {
             continue;
         }
@@ -288,7 +338,9 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
     std::cout << "[-] Parsing $LogFile Records" << std::endl;
 
     Buffer<PBYTE> leftover_buffer(8 * 4096);
+    // 某个跨页记录在第一页中的字节数
     DWORD leftover_size = 0;
+    // 某个跨页记录还缺的字节数
     DWORD leftover_missing_size = 0;
     DWORD processed = 0;
 
@@ -320,18 +372,68 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
 
         if (leftover_size > 0)
         {
-            memcpy(leftover_buffer.data() + leftover_size, POINTER_ADD(PBYTE, prh, offset), min(leftover_missing_size, 4096 - offset));
-            leftover_missing_size -= min(leftover_missing_size, 4096 - offset);
+            // 这一块数据中用来补齐前页的字节数
+            DWORD used_count = (min(leftover_missing_size, 4096 - offset));
+            memcpy(leftover_buffer.data() + leftover_size, POINTER_ADD(PBYTE, prh, offset), used_count);
+            leftover_missing_size -= used_count;
+            offset += used_count;
 
+            // 如果补齐了一整个记录,则直接使用
             if (leftover_missing_size == 0)
             {
+                leftover_size = 0;
                // _add_record(ffile, POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0));
 
-                processed++;
-                std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
+                auto prl = POINTER_ADD(PRECORD_LOG, leftover_buffer.data(), 0);
+                if (prl->lsn == 0 || prl->record_type == 0 || prl->record_type > 37)
+                {
+                    continue;
+                }
 
-                offset += leftover_missing_size;
-                leftover_size = 0;
+                // 验证数据是否正确
+                if (prl->redo_length > prl->client_data_length
+                    || prl->undo_length > prl->client_data_length)
+                {
+                    // 错误数据,跳过
+                    _DumpOutput("Found error record offset with multi page 0x" + utils::format::hex6(offset + page_offset)); 
+                    continue;
+                }
+
+                std::string_view redo_chunk;
+                std::string_view undo_chunk;
+
+                // DeleteIndexEntryAllocation
+                if (prl->redo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
+                {
+                    if (prl->redo_length > 0)
+                    {
+                        redo_chunk = std::string_view((char*)prl + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->redo_offset, prl->redo_length);
+                        My_Decode_IndexEntry(redo_chunk, prl->redo_operation, true);
+                    }
+                }
+                
+                // AddIndexEntryAllocation 删除文件
+                if (prl->undo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
+                {
+                    if (prl->undo_length > 0)
+                    {
+                        undo_chunk = std::string_view((char*)prl + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->undo_offset, prl->undo_length);
+
+                        // 这里继续处理删除文件的日志
+                       // std::cout << std::endl << "file delete record..." << std::endl;
+                        My_Decode_IndexEntry(undo_chunk, prl->undo_operation, false);
+                    }
+                }
+
+                if (prl->undo_operation == LOG_RECORD_OP_INITIALIZE_FILE_RECORD_SEGMENT && prl->undo_length > sizeof(MFT_RECORD_HEADER))
+                {
+                    ParseMft(undo_chunk, reader);
+                }
+
+                processed++;
+#ifdef OPEN_COUT 
+                std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
+#endif
             }
             else
             {
@@ -368,6 +470,7 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
 
             if ((prl->lsn > max_last_lsn) || (prl->client_previous_lsn > max_last_lsn) || (prl->client_undo_next_lsn > max_last_lsn) || (prl->lsn < last_lsn_tmp_refdown) || (prl->client_previous_lsn < last_lsn_tmp_refdown && prl->client_previous_lsn != 0) || (prl->client_undo_next_lsn < last_lsn_tmp_refdown && prl->client_undo_next_lsn != 0))
             {
+#ifdef OPEN_COUT 
                 _DumpOutputPrintf("Scanning for LSN signature from RCRD offset: 0x%s\r\n", utils::format::hex(offset + page_offset, false, false).c_str());
                 // 	_DumpOutput("DoNotreturn 0;Data: "  DoNotreturn 0;Data +  "\r\n");
                 // 	_DumpOutput("OffsetAdjustment: "  OffsetAdjustment +  "\r\n");
@@ -378,6 +481,7 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
                 // 	_DumpOutput("last_lsn_tmp_refdown: "  last_lsn_tmp_refdown +  "\r\n");
                 // 	_DumpOutput("NextOffset: "  NextOffset +  "\r\n");
                 // 	_DumpOutput("CharsToMove: "  CharsToMove +  "\r\n");
+#endif
 
                 bool LsnSignatureFound = false;
                 while (true)
@@ -489,6 +593,8 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
             static std::set<uint64_t> care_lsn = {
                  1148978,//创建9CF7.tmp的记录
                  1149664,//删除9CF7.tmp的记录
+                 2207502, // $undo_operation: AddindexEntryRoot test.txt 
+                 2207526, // $undo_operation: InitializeFileRecordSegment test.txt 
             };
             if (care_lsn.count(prl->lsn))
             {
@@ -530,22 +636,26 @@ void dump_logdata(const std::shared_ptr<Buffer<PBYTE>>& logFileData)
                         My_Decode_IndexEntry(redo_chunk, prl->redo_operation, true);
                     }
                 }
-
-                // AddIndexEntryAllocation 删除文件
-                if (prl->undo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
+                if (prl->undo_length > 0)
                 {
-                    if (prl->undo_length > 0)
-                    {
-                        undo_chunk = std::string_view((char*)prl + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->undo_offset, prl->undo_length);
+                    undo_chunk = std::string_view((char*)prl + MFT_LOGFILE_LOG_RECORD_HEADER_SIZE + prl->undo_offset, prl->undo_length);
 
+                    // AddIndexEntryAllocation 删除文件 LOG_RECORD_OP_DEALLOCATE_FILE_RECORD_SEGMENT
+                    if (prl->undo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION||
+                        prl->undo_operation == LOG_RECORD_OP_ADD_INDEX_ENTRY_ROOT)
+                    {
                         // 这里继续处理删除文件的日志
-                        std::cout << std::endl << "file delete record..." << std::endl;
+                       // std::cout << std::endl << "file delete record..." << std::endl;
                         My_Decode_IndexEntry(undo_chunk, prl->undo_operation, false);
+
+                    }
+                    else if (prl->undo_operation == LOG_RECORD_OP_INITIALIZE_FILE_RECORD_SEGMENT && prl->undo_length > sizeof(MFT_RECORD_HEADER))
+                    {
+                        ParseMft(undo_chunk, reader);
                     }
                 }
-
                 processed++;
-                std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
+               // std::cout << "\r[-] $LogFile Record Count : " << std::to_string(processed) + "     ";
             }
         }
     }
@@ -556,9 +666,6 @@ int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vo
     if (!is_ntfs(disk, vol)) return 1;
 
     utils::ui::title("LogFile from " + disk->name() + " > Volume:" + std::to_string(vol->index()));
-
-    std::shared_ptr<PathFinder> pf = std::make_shared<PathFinder>(vol);
-    std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
 
     std::cout << "[+] Opening " << vol->name() << std::endl;
 
@@ -571,9 +678,11 @@ int print_logfile_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vo
     std::cout << "[+] $LogFile size : " << utils::format::size(total_size) << std::endl;
 
     std::shared_ptr<Buffer<PBYTE>> logfile = record->data();
-    dump_logdata(logfile);
+    dump_logdata(logfile, explorer);
 
     // 恢复全路径
+    std::shared_ptr<PathFinder> pf = std::make_shared<PathFinder>(vol, true);
+    std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
     for (auto& log : g_records)
     {
         // 返回 "volume:\\" 或 "orphan:\\" 开头
@@ -606,7 +715,10 @@ void process_usn(std::shared_ptr<NTFSExplorer> explorer, std::shared_ptr<MFTReco
     {
         processed_size += block.second;
 
-        std::cout << "\r[+] Processing USN records: " << std::to_string(processed_count) << " (" << utils::format::size(processed_size) << ")     ";
+        if ((processed_count % 100) == 0)
+        {
+            std::cout << "\r[+] Processing USN records: " << std::to_string(processed_count) << " (" << utils::format::size(processed_size) << ")     ";
+        }
 
         if (filled_size)
         {
@@ -634,6 +746,8 @@ void process_usn(std::shared_ptr<NTFSExplorer> explorer, std::shared_ptr<MFTReco
             }
             case 2:
             {
+                processed_count++;
+
                 PUSN_RECORD_V2 usn_record = (PUSN_RECORD_V2)header;
                 if (!(usn_record->Reason & USN_REASON_FILE_DELETE))
                 {
@@ -644,8 +758,6 @@ void process_usn(std::shared_ptr<NTFSExplorer> explorer, std::shared_ptr<MFTReco
 
                 std::wstring filename = std::wstring(usn_record->FileName);
                 filename.resize(usn_record->FileNameLength / sizeof(WCHAR));
-
-                processed_count++;
 
                 UsnFileRecord record;
                 record.usn = usn_record->Usn;
@@ -703,8 +815,8 @@ int print_usn_records(std::shared_ptr<Disk> disk, std::shared_ptr<Volume> vol)
 
     std::shared_ptr<PathFinder> pf = nullptr;   
     {
-        pf = std::make_shared<PathFinder>(vol);
-        std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
+        pf = std::make_shared<PathFinder>(vol, true);
+        //std::cout << "[+] " << pf->count() << " $MFT records loaded" << std::endl;
     }
 
     std::cout << "[+] Opening " << vol->name() << std::endl;
@@ -752,7 +864,9 @@ bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
     }
 
     // 仅undo并且undo是恢复文件时才有效
-    if (!IsRedo && AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION)
+    if (!IsRedo && (
+        AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ALLOCATION
+        || AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ROOT))
     {
         LogFileFileRecord record;
         memcpy(&record, pBuffer, Entry.size());
@@ -761,6 +875,7 @@ bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
     }
 
 #ifdef _DEBUG
+#ifdef OPEN_COUT 
     { /*If then*/
         _DumpOutput("_Decode_IndexEntry():");
 
@@ -792,6 +907,7 @@ bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
         auto filename = pEntry->filename();
     }
 #endif
+#endif
 
     if (AttrType == LOG_RECORD_OP_ADD_INDEX_ENTRY_ROOT || AttrType == LOG_RECORD_OP_DELETE_INDEX_ENTRY_ROOT)
     { /*If Then in one Line*/
@@ -804,7 +920,6 @@ bool My_Decode_IndexEntry(std::string_view Entry, int AttrType, bool IsRedo)
     }
     return true;
 }
-
 
 extern "C" __declspec(dllexport) int InitNtfsTool()
 {
@@ -861,10 +976,125 @@ extern "C" __declspec(dllexport) int GetDeleteRecords(int disk_index, uint64_t v
     return 1;
 }
 
+extern "C" __declspec(dllexport) int ReadFromMft(int disk_index, uint64_t volume_offset, uint64_t mft, int(*on_data)(char* buffer, int size))
+{
+    std::shared_ptr<Disk> disk = core::win::disks::by_index(disk_index);;
+    if (disk != nullptr)
+    {
+        for (auto volume : disk->volumes())
+        {
+            if (volume != nullptr && volume->offset() == volume_offset)
+            {
+#ifdef OPEN_COUT 
+                std::cout << "[+] Opening " << volume->name() << std::endl;
+#endif
+                std::shared_ptr<NTFSExplorer> explorer = std::make_shared<NTFSExplorer>(volume);
+#ifdef OPEN_COUT 
+                std::cout << "[+] Finding file record" << std::endl;
+#endif
+                std::shared_ptr<MFTRecord> record = explorer->mft()->record_from_number(mft & 0xffffffffffffUL);
+                if (!record)
+                {
+                    return MFT_ERROR_NOT_FOUND;
+                }
+
+                auto sequenceCount = mft >> 48;
+                // 允许MFT索引加1,这是因为删除文件本身会使mft更新
+                if (record->header()->sequenceNumber > sequenceCount + 1)
+                {
+                    // 更新次数不同于表示该mft已经发生变化,原文件已经被覆盖,所以无法读取
+#ifdef OPEN_COUT 
+                    std::cout << "原文件已经被覆盖,所以无法读取 " << pRecord.mftUpdateSequenceCount() << " - " << record->header()->sequenceNumber;
+#endif
+                    return MFT_ERROR_OVERRIDE;
+                }
+                else
+                {
+                    auto bytes = record->data_to_callback(on_data, {});
+                }
+                return 0;
+            }
+        }
+
+        return MFT_ERROR_VOLUME_NOT_FOUND;
+    }
+    else
+    {
+        return MFT_ERROR_DISK_NOT_FOUND;
+    }
+}
+
+int test_on_data(char* buffer, int size)
+{
+    std::cout << size << " : " << buffer << std::endl;
+    return size;
+}
+
+void TestReadFileByMft(int disk_index, uint64_t volume_offset, LogFileFileRecord pRecord)
+{
+    std::shared_ptr<Disk> disk = core::win::disks::by_index(disk_index);;
+    if (disk != nullptr)
+    {
+        for (auto volume : disk->volumes())
+        {
+            if (volume != nullptr && volume->offset() == volume_offset)
+            {
+                std::cout << "[+] Opening " << volume->name() << std::endl;
+                std::shared_ptr<NTFSExplorer> explorer = std::make_shared<NTFSExplorer>(volume);
+
+                std::cout << "[+] Finding file record" << std::endl;
+                std::shared_ptr<MFTRecord> record = explorer->mft()->record_from_number(pRecord.mftIndex());
+
+                // 允许MFT索引加1,这是因为删除文件本身会使mft更新
+                if (record->header()->sequenceNumber > pRecord.mftUpdateSequenceCount() + 1)
+                {
+                    // 更新次数不同于表示该mft已经发生变化,原文件已经被覆盖,所以无法读取
+                    std::cout << "原文件已经被覆盖,所以无法读取 " << pRecord.mftUpdateSequenceCount() << " - " << record->header()->sequenceNumber;
+                }
+                else
+                {
+                    std::wcout << pRecord.filename_pointer;
+                    auto bytes = record->data_to_callback(&test_on_data,{});
+                }
+                return ;
+            }
+        }
+    }
+}
+
 void main()
 {
+    // D盘
+    //const auto disk_index = 1;
+    //const auto volume_offset = 16777216;
+
+
+#ifdef _DEBUG
+    // W
+    const auto disk_index = 2;
+    const auto volume_offset = 52642709504;
+
     LogFileFileRecord* records = nullptr;
     int count = 0;
-    GetDeleteRecordsByFileRecord(2, 6, &records, &count);
-    std::cout << "records: " << count;
+    GetDeleteRecordsByFileRecord(disk_index, volume_offset, &records, &count);
+    std::cout << "log records: " << count;
+
+    for (auto i = 0; i < count; i++)
+    {
+        if (records[i].filename() == L"test.txt"
+            || records[i].filename() == L"d_megadrive.cpp")
+        {
+            TestReadFileByMft(disk_index, volume_offset, records[i]);
+        }
+    }
+
+    UsnFileRecord* usn_records = nullptr;
+    int usn_count = 0;
+    GetDeleteRecords(disk_index, volume_offset, &usn_records, &usn_count);
+    std::cout << "usn records: " << count;
+
+    // 找一个文件,读取所有MFT
+    int a;
+    std::cin >> a;
+#endif
 }

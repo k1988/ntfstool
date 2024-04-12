@@ -1,8 +1,10 @@
 #include "path_finder.h"
 
-PathFinder::PathFinder(std::shared_ptr<Volume> volume)
+PathFinder::PathFinder(std::shared_ptr<Volume> volume, bool delayLoadMft) :
+	_delay(delayLoadMft),
+	_volume(volume)
 {
-
+	if (!_delay)
 	{
 		std::cout << "[+] Loading $MFT records" << std::endl;
 
@@ -56,27 +58,106 @@ std::string PathFinder::get_file_path(std::string filename, DWORD64 parent_inode
 {
 	std::string path = filename;
 
-	while ((parent_inode & 0xffffffffffff) != 5)
+	if (!_delay)
 	{
-		auto tmp = _map_parent.find(parent_inode);
-		if (tmp != _map_parent.end())
+		while ((parent_inode & 0xffffffffffff) != 5)
 		{
-			path = _map_name[parent_inode] + "\\" + path;
-			parent_inode = tmp->second;
+			auto tmp = _map_parent.find(parent_inode);
+			if (tmp != _map_parent.end())
+			{
+				path = _map_name[parent_inode] + "\\" + path;
+				parent_inode = tmp->second;
+			}
+			else
+			{
+				break;
+			}
+		}
+		if ((parent_inode & 0xffffffffffff) == 5)
+		{
+			path = "volume:\\" + path;
 		}
 		else
 		{
-			break;
+			path = "orphan:\\" + path;
 		}
-	}
-	if ((parent_inode & 0xffffffffffff) == 5)
-	{
-		path = "volume:\\" + path;
 	}
 	else
 	{
-		path = "orphan:\\" + path;
+		if (!_explorer)
+		{
+			_explorer = std::make_shared<NTFSExplorer>(_volume);
+		}
+
+		while ((parent_inode & 0xffffffffffff) != 5)
+		{
+			auto tmp = _map_parent.find(parent_inode);
+			if (tmp != _map_parent.end())
+			{
+				path = _map_name[parent_inode] + "\\" + path;
+				parent_inode = tmp->second;
+			}
+			else
+			{
+				if (!fillNode(parent_inode))
+				{
+					break;
+				}
+
+				auto tmp = _map_parent.find(parent_inode);
+				if (tmp != _map_parent.end())
+				{
+					path = _map_name[parent_inode] + "\\" + path;
+					parent_inode = tmp->second;
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+
+		if ((parent_inode & 0xffffffffffff) == 5)
+		{
+			path = "volume:\\" + path;
+		}
+		else
+		{
+			path = "orphan:\\" + path;
+		}
+	}
+	return path;
+}
+
+bool PathFinder::fillNode(DWORD64 inode)
+{
+	auto index = inode & 0xffffffffffff;
+	auto update_count = inode >> 48;
+
+	std::shared_ptr<MFTRecord> record = nullptr;
+	record = _explorer->mft()->record_from_number(index);
+	if (record == nullptr || !MFTRecord::is_valid(record->header()))
+	{
+		return false;
 	}
 
-	return path;
+	ULONGLONG file_record_num = record->header()->sequenceNumber;
+	file_record_num = file_record_num << 48 | record->header()->MFTRecordIndex;
+	if (inode != file_record_num)
+	{
+		// 读取出来的record中索引或者sequenceNumber发生了变化,说明已经不是原来的父节点了
+		return false;
+	}
+
+	ULONGLONG file_info_parentid = 0;
+	PMFT_RECORD_ATTRIBUTE_HEADER pattr = record->attribute_header($FILE_NAME, "", 0);
+	if (pattr != nullptr)
+	{
+		auto pattr_filename = POINTER_ADD(PMFT_RECORD_ATTRIBUTE_FILENAME, pattr, pattr->Form.Resident.ValueOffset);
+		file_info_parentid = pattr_filename->ParentDirectory.SequenceNumber << 48 | pattr_filename->ParentDirectory.FileRecordNumber;
+	}
+
+	_map_parent[file_record_num] = file_info_parentid;
+	_map_name[file_record_num] = utils::strings::to_utf8(record->filename());
+	return true;
 }

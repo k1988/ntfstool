@@ -18,7 +18,8 @@ public:
 	explicit NTFSReader(std::wstring volume_name, DWORD64 volume_offset = 0);
 	~NTFSReader();
 
-	struct {
+	struct NtfsSizes
+	{
 		ULONG32 cluster_size = 0;
 
 		ULONG32 record_size = 0;
