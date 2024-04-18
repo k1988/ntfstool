@@ -219,29 +219,14 @@
     <ClInclude Include="Sources\Commands\ntfsdump_logfile_ext.h">
       <Filter>Header Files\Commands</Filter>
     </ClInclude>
+    <ClInclude Include="Sources\libntfsinfo.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Sources\NTFS\ntfs_mft_record_mem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Sources\main.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\options.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_gpt.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_help.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_info.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_mbr.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_bitlocker.fve.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
     <ClCompile Include="Sources\Utils\table.cpp">
       <Filter>Source Files\Utils</Filter>
     </ClCompile>
@@ -250,30 +235,6 @@
     </ClCompile>
     <ClCompile Include="Sources\Utils\utils.cpp">
       <Filter>Source Files\Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_vbr.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_bitlocker.info.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_mft.record.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_usn.dump.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_shell.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_logfile.dump.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_undelete.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_bitlocker.decrypt.cpp">
-      <Filter>Source Files\Commands</Filter>
     </ClCompile>
     <ClCompile Include="Sources\NTFS\ntfs_explorer.cpp">
       <Filter>Source Files\NTFS</Filter>
@@ -289,9 +250,6 @@
     </ClCompile>
     <ClCompile Include="Sources\NTFS\ntfs_reader.cpp">
       <Filter>Source Files\NTFS</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_extract.cpp">
-      <Filter>Source Files\Commands</Filter>
     </ClCompile>
     <ClCompile Include="Sources\Utils\crash_handler.cpp">
       <Filter>Source Files\Utils</Filter>
@@ -320,38 +278,14 @@
     <ClCompile Include="Sources\Bitlocker\decryption.cpp">
       <Filter>Source Files\Bitlocker</Filter>
     </ClCompile>
-    <ClCompile Include="Sources\Commands\command_reparse.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_image.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_shadow.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_smart.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
     <ClCompile Include="Sources\Utils\index_details.cpp">
       <Filter>Source Files\Utils</Filter>
     </ClCompile>
     <ClCompile Include="Sources\Utils\btree.cpp">
       <Filter>Source Files\Utils</Filter>
     </ClCompile>
-    <ClCompile Include="Sources\Commands\command_streams.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_efs.masterkey.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
     <ClCompile Include="Sources\EFS\masterkey_file.cpp">
       <Filter>Source Files\EFS</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_mft.btree.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_efs.key.cpp">
-      <Filter>Source Files\Commands</Filter>
     </ClCompile>
     <ClCompile Include="Sources\EFS\private_key_enc.cpp">
       <Filter>Source Files\EFS</Filter>
@@ -367,18 +301,6 @@
     </ClCompile>
     <ClCompile Include="Sources\EFS\certificate_file.cpp">
       <Filter>Source Files\EFS</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_efs.backup.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\commands.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_efs.certificate.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_efs.decrypt.cpp">
-      <Filter>Source Files\Commands</Filter>
     </ClCompile>
     <ClCompile Include="Sources\EFS\pkcs12_archive.cpp">
       <Filter>Source Files\EFS</Filter>
@@ -398,9 +320,6 @@
     <ClCompile Include="Sources\Compression\lznt1.cpp">
       <Filter>Source Files\Compression</Filter>
     </ClCompile>
-    <ClCompile Include="Sources\Commands\command_mft.dump.cpp">
-      <Filter>Source Files\Commands</Filter>
-    </ClCompile>
     <ClCompile Include="Sources\Utils\zone_identifier.cpp">
       <Filter>Source Files\Utils</Filter>
     </ClCompile>
@@ -409,9 +328,6 @@
     </ClCompile>
     <ClCompile Include="Sources\Utils\json_file.cpp">
       <Filter>Source Files\Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Sources\Commands\command_usn.analyze.cpp">
-      <Filter>Source Files\Commands</Filter>
     </ClCompile>
     <ClCompile Include="Sources\Utils\usn_rules.cpp">
       <Filter>Source Files\Utils</Filter>
@@ -424,6 +340,12 @@
     </ClCompile>
     <ClCompile Include="Sources\Commands\ntfsdump_logfile_ext.cpp">
       <Filter>Header Files\Commands</Filter>
+    </ClCompile>
+    <ClCompile Include="Sources\dllmain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Sources\NTFS\ntfs_mft_record_mem.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

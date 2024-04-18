@@ -341,7 +341,7 @@ void dump_logdata(const std::string& format, std::string output, const std::shar
 			auto pageData = utils::convert::to_hex((char*)prh, newest_restart_header->log_page_size, false);
 			pageData.insert(0, "  ");
 			pageData = _DoFixup(pageData, page_offset);
-		//	_DecodeRCRD(pageData, page_offset, 0, 1);
+			_DecodeRCRD(pageData, page_offset, 0, 1);
 		}		
 
         fixup_sequence(prh);
@@ -709,6 +709,11 @@ namespace commands
 					{
 						if (opts->format == "") opts->format = "csv";
 					}
+                    else
+                    {
+                        opts->output = "temp.csv";
+                        opts->format = "csv";
+                    }
 
 					print_logfile_records_file(opts->from, filebuf, opts->format, opts->output);
 				}
